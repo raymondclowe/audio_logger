@@ -27,8 +27,8 @@ TEMP_DIR = Path(__file__).parent / "temp"
 SAMPLE_RATE = 44100
 CHANNELS = 2
 SILENCE_THRESHOLD = 500  # RMS threshold for silence detection
-VLC_CPU_THRESHOLD = 5.0  # percent; if VLC above this, assume playing
-VLC_CHECK_INTERVAL = 0.5  # seconds for cpu sampling
+VLC_CPU_THRESHOLD = 4.0  # percent; if VLC above this, assume playing
+VLC_CHECK_INTERVAL = 1.0  # seconds for cpu sampling
 
 
 def setup_directories():
