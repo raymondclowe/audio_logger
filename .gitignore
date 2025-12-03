@@ -1,0 +1,8 @@
+logs/
+temp/
+*.wav
+*.prof
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
