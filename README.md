@@ -7,6 +7,7 @@ Continuous audio recording and transcription service.
 - Records audio in 1-minute segments
 - Cleans audio using sox (noise reduction, filters)
 - Detects silent audio and skips transcription
+- Detects VLC playback via CPU usage and pauses recording
 - Transcribes using Whisper API at http://192.168.0.142:8085
 - Logs transcripts to daily log files with timestamps
 
@@ -51,6 +52,8 @@ Edit `main.py` to change:
 - `TRANSCRIBE_URL`: Transcription service URL
 - `TRANSCRIBE_MODEL`: Whisper model to use (default: "base")
 - `SILENCE_THRESHOLD`: RMS threshold for silence detection (default: 500)
+- `VLC_CPU_THRESHOLD`: Minimum CPU% to consider VLC "playing" (default: 5.0)
+- `VLC_CHECK_INTERVAL`: Sampling window for VLC CPU detection (default: 0.5s)
 
 ## Log Files
 

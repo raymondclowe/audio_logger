@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 import requests
 import numpy as np
+import psutil
 import wave
 
 # Configuration
@@ -26,6 +27,8 @@ TEMP_DIR = Path(__file__).parent / "temp"
 SAMPLE_RATE = 44100
 CHANNELS = 2
 SILENCE_THRESHOLD = 500  # RMS threshold for silence detection
+VLC_CPU_THRESHOLD = 5.0  # percent; if VLC above this, assume playing
+VLC_CHECK_INTERVAL = 0.5  # seconds for cpu sampling
 
 
 def setup_directories():
@@ -109,6 +112,36 @@ def clean_audio(input_path: Path, output_path: Path) -> bool:
         return False
 
 
+def is_vlc_playing() -> bool:
+    """Detect if VLC is running and actively playing by CPU usage."""
+    try:
+        vlc_procs = []
+        for p in psutil.process_iter(attrs=["name"]):
+            if p.info.get("name", "").lower() == "vlc":
+                vlc_procs.append(p)
+        if not vlc_procs:
+            return False
+
+        # Prime cpu_percent measurements
+        for p in vlc_procs:
+            try:
+                p.cpu_percent(interval=None)
+            except Exception:
+                pass
+        # Sample over interval
+        time.sleep(VLC_CHECK_INTERVAL)
+        for p in vlc_procs:
+            try:
+                cpu = p.cpu_percent(interval=None)
+                if cpu >= VLC_CPU_THRESHOLD:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
 def transcribe_audio(audio_path: Path) -> str:
     """Transcribe audio file using the transcription service."""
     try:
@@ -160,6 +193,11 @@ def main():
     
     while True:
         try:
+            # Pause logging if VLC is actively playing
+            if is_vlc_playing():
+                print("VLC activity detected; pausing recording for this cycle.")
+                time.sleep(5)
+                continue
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             raw_audio = TEMP_DIR / f"raw_{timestamp}.wav"
             clean_audio_path = TEMP_DIR / f"clean_{timestamp}.wav"
