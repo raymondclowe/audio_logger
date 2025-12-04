@@ -336,7 +336,8 @@ def update_noise_profile(audio_path: Path) -> bool:
             "noiseprof", str(NOISE_PROFILE)
         ]
         subprocess.run(cmd, check=True, capture_output=True)
-        print(f"Updated noise profile from {audio_path.name}")
+        if DEBUG:
+            print(f"Updated noise profile from {audio_path.name}")
         set_file_permissions(NOISE_PROFILE)
         return True
     except subprocess.CalledProcessError as e:
