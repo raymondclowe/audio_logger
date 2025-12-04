@@ -35,10 +35,11 @@ SAMPLE_RATE = 44100
 CHANNELS = 2
 # Adaptive thresholds - will be learned from silent periods
 SILENCE_BASELINE_SAMPLES = 10  # Collect this many silent recordings before stabilizing
-BASELINE_MARGIN = 1.3  # 30% margin above silence baseline for "definitely quiet"
-SPEECH_MULTIPLIER = 2.5  # Speech must be this many times above silence baseline
-SPEECH_VARIANCE_THRESHOLD = 0.3  # Coefficient of variation for speech pattern detection
+BASELINE_MARGIN = 1.5  # 50% margin above silence baseline for "definitely quiet"
+SPEECH_MULTIPLIER = 3.5  # Speech must be this many times above silence baseline (raised from 2.5)
+SPEECH_VARIANCE_THRESHOLD = 0.4  # Coefficient of variation for speech pattern detection (raised from 0.3)
 ENVIRONMENT_UPDATE_THRESHOLD = 0.5  # If no speech found this many times, re-baseline
+ABSOLUTE_SPEECH_MINIMUM = 80  # Conservative absolute minimum for speech (lowered for portability)
 # Windowed RMS config: speech is intermittent; use peak of window RMS
 RMS_WINDOW_SECS = 0.05  # 50ms window
 RMS_PERCENTILE = 90     # percentile of window RMS (for stats only)
@@ -403,7 +404,7 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
         # Get adaptive thresholds based on learned silence baseline
         silence_baseline = BASELINE.get_silence_baseline()
         definitely_quiet = BASELINE.get_definitely_quiet_threshold()
-        speech_minimum = BASELINE.get_speech_minimum()
+        speech_minimum = max(BASELINE.get_speech_minimum(), ABSOLUTE_SPEECH_MINIMUM)
         
         # Decision tree
         if peak_rms < definitely_quiet:
