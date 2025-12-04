@@ -6,6 +6,7 @@ Records 1-minute segments, cleans audio, transcribes, and logs to daily files.
 
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime
@@ -14,6 +15,9 @@ import requests
 import numpy as np
 import psutil
 import wave
+
+# Debug flag - check CLI argument and .debug file in working directory
+DEBUG = "--debug" in sys.argv or Path(".debug").exists()
 
 # Configuration
 AUDIO_DEVICE = "plughw:0,0"
@@ -70,11 +74,12 @@ class AudioBaseline:
                     data = json.load(f)
                     self.silent_peaks = data.get('silent_peaks', [])
                     self.is_learning = len(self.silent_peaks) < SILENCE_BASELINE_SAMPLES
-                    if not self.is_learning:
+                    if not self.is_learning and DEBUG:
                         print(f"✓ Loaded baseline from {self.baseline_file.name}")
                         print(f"  Silence baseline (P10): {self.get_silence_baseline():.1f}")
         except Exception as e:
-            print(f"⚠ Could not load baseline: {e}")
+            if DEBUG:
+                print(f"⚠ Could not load baseline: {e}")
     
     def save(self):
         """Save baseline to file."""
@@ -84,7 +89,8 @@ class AudioBaseline:
             with open(self.baseline_file, 'w') as f:
                 json.dump({'silent_peaks': self.silent_peaks}, f)
         except Exception as e:
-            print(f"⚠ Could not save baseline: {e}")
+            if DEBUG:
+                print(f"⚠ Could not save baseline: {e}")
     
     def add_silent_sample(self, peak_rms: float):
         """Record a peak RMS from a confirmed silent period."""
@@ -96,15 +102,16 @@ class AudioBaseline:
         self.no_speech_count = 0  # Reset counter
         self.save()
         
-        if self.is_learning:
-            print(f"  Learning baseline ({len(self.silent_peaks)}/{SILENCE_BASELINE_SAMPLES})")
-        else:
-            print(f"  Baseline updated: {self.get_silence_baseline():.1f}")
+        if DEBUG:
+            if self.is_learning:
+                print(f"  Learning baseline ({len(self.silent_peaks)}/{SILENCE_BASELINE_SAMPLES})")
+            else:
+                print(f"  Baseline updated: {self.get_silence_baseline():.1f}")
     
     def record_no_speech(self):
         """Record that we detected high RMS but no speech pattern."""
         self.no_speech_count += 1
-        if self.no_speech_count >= 3:
+        if self.no_speech_count >= 3 and DEBUG:
             print(f"⚠ Background noise increased ({self.no_speech_count}x no-speech detections)")
             print(f"  Consider environment change (new AC, window open, etc.)")
     
@@ -185,7 +192,8 @@ def create_overlapped_audio(current_path: Path, output_path: Path) -> bool:
             return True
             
     except Exception as e:
-        print(f"Failed to create overlap, using current audio only: {e}")
+        if DEBUG:
+            print(f"Failed to create overlap, using current audio only: {e}")
         import shutil
         shutil.copy(current_path, output_path)
         set_file_permissions(output_path)
@@ -216,7 +224,8 @@ def record_audio(output_path: Path, duration: int) -> bool:
         set_file_permissions(output_path)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Recording failed: {e}")
+        if DEBUG:
+            print(f"Recording failed: {e}")
         return False
 
 
@@ -310,7 +319,8 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
         }
         return is_silent, stats
     except Exception as e:
-        print(f"Error checking silence: {e}")
+        if DEBUG:
+            print(f"Error checking silence: {e}")
         return False, {
             "mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0,
             "is_speech": False, "reason": "error"
@@ -330,7 +340,8 @@ def update_noise_profile(audio_path: Path) -> bool:
         set_file_permissions(NOISE_PROFILE)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Failed to update noise profile: {e}")
+        if DEBUG:
+            print(f"Failed to update noise profile: {e}")
         return False
 
 
@@ -375,7 +386,8 @@ def clean_audio(input_path: Path, output_path: Path) -> bool:
         return True
         
     except subprocess.CalledProcessError as e:
-        print(f"Audio cleaning failed: {e}")
+        if DEBUG:
+            print(f"Audio cleaning failed: {e}")
         return False
 
 
@@ -442,7 +454,8 @@ def transcribe_audio(audio_path: Path) -> str:
             return transcript
             
     except Exception as e:
-        print(f"Transcription failed: {e}")
+        if DEBUG:
+            print(f"Transcription failed: {e}")
         return ""
 
 
@@ -464,9 +477,11 @@ def log_transcript(text: str, stats: dict = None, filename: str = None):
                 f.write(f"\n")
             f.write(f"[{timestamp}] {text}\n")
         set_file_permissions(log_path)
-        print(f"[{timestamp}] Logged: {text}")
+        if DEBUG:
+            print(f"[{timestamp}] Logged: {text}")
     except Exception as e:
-        print(f"Failed to write log: {e}")
+        if DEBUG:
+            print(f"Failed to write log: {e}")
 
 
 def cleanup_temp_files(max_age_hours: int = 12, keep_last_n_wavs: int = 5):
@@ -497,20 +512,23 @@ def cleanup_temp_files(max_age_hours: int = 12, keep_last_n_wavs: int = 5):
             except Exception:
                 continue
     except Exception as e:
-        print(f"Cleanup failed: {e}")
+        if DEBUG:
+            print(f"Cleanup failed: {e}")
 
 
 def main():
     """Main loop: record, clean, transcribe, log."""
     global PREVIOUS_AUDIO
-    print("Starting audio logger service...")
+    if DEBUG:
+        print("Starting audio logger service...")
     setup_directories()
     
     while True:
         try:
             # Pause logging if VLC is actively playing
             if is_vlc_playing():
-                print("VLC activity detected; pausing recording for this cycle.")
+                if DEBUG:
+                    print("VLC activity detected; pausing recording for this cycle.")
                 time.sleep(5)
                 continue
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -518,11 +536,13 @@ def main():
             overlapped_audio = TEMP_DIR / f"overlapped_{timestamp}.wav"
             clean_audio_path = TEMP_DIR / f"clean_{timestamp}.wav"
             
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Recording for {RECORD_DURATION} seconds...")
+            if DEBUG:
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Recording for {RECORD_DURATION} seconds...")
             
             # Record audio
             if not record_audio(raw_audio, RECORD_DURATION):
-                print("Recording failed, retrying...")
+                if DEBUG:
+                    print("Recording failed, retrying...")
                 time.sleep(5)
                 continue
             
@@ -535,11 +555,12 @@ def main():
             # Check if audio is silent and log RMS value (using overlapped audio)
             is_silent, stats = is_audio_silent(overlapped_audio)
             
-            # Format detailed diagnostic output
-            baselines = stats.get('baselines', {})
-            learning_status = " [LEARNING]" if stats.get('learning') else ""
-            print(f"RMS peak={stats['peak']:.1f} mean={stats['mean']:.1f} var={stats['variance']:.3f}{learning_status}")
-            print(f"  Thresholds: quiet<{baselines.get('quiet', 0):.0f} speech>{baselines.get('speech_min', 0):.0f} Reason: {stats['reason']}")
+            # Format detailed diagnostic output (debug only)
+            if DEBUG:
+                baselines = stats.get('baselines', {})
+                learning_status = " [LEARNING]" if stats.get('learning') else ""
+                print(f"RMS peak={stats['peak']:.1f} mean={stats['mean']:.1f} var={stats['variance']:.3f}{learning_status}")
+                print(f"  Thresholds: quiet<{baselines.get('quiet', 0):.0f} speech>{baselines.get('speech_min', 0):.0f} Reason: {stats['reason']}")
             
             if is_silent:
                 update_noise_profile(overlapped_audio)
@@ -547,30 +568,35 @@ def main():
                 continue
             
             # Clean audio (use overlapped version)
-            print("Cleaning audio...")
+            if DEBUG:
+                print("Cleaning audio...")
             if not clean_audio(overlapped_audio, clean_audio_path):
-                print("Audio cleaning failed, skipping transcription.")
+                if DEBUG:
+                    print("Audio cleaning failed, skipping transcription.")
                 raw_audio.unlink()
                 continue
             
             # Transcribe
-            print("Transcribing...")
+            if DEBUG:
+                print("Transcribing...")
             transcript = transcribe_audio(clean_audio_path)
             
-            # Log the result with audio stats for debugging
+            # Log the result
             if transcript:
                 log_transcript(transcript, stats, raw_audio.name)
-            else:
+            elif DEBUG:
                 print("No transcript generated.")
             
             # Cleanup temporary files (keep last few wavs for debugging)
             cleanup_temp_files()
             
         except KeyboardInterrupt:
-            print("\nStopping audio logger...")
+            if DEBUG:
+                print("\nStopping audio logger...")
             break
         except Exception as e:
-            print(f"Error in main loop: {e}")
+            if DEBUG:
+                print(f"Error in main loop: {e}")
             time.sleep(5)
 
 
