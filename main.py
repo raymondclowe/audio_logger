@@ -20,7 +20,7 @@ AUDIO_DEVICE = "plughw:3,0"
 RECORD_DURATION = 30  # seconds
 OVERLAP_DURATION = 2  # seconds - overlap between chunks to avoid word breaks
 TRANSCRIBE_URL = "http://192.168.0.142:8085/transcribe"
-TRANSCRIBE_MODEL = "base"
+TRANSCRIBE_MODEL = "small"
 LOG_DIR = Path(__file__).parent / "logs"
 TEMP_DIR = Path(__file__).parent / "temp"
 NOISE_PROFILE = Path(__file__).parent / "temp" / "ambient_noise.prof"
@@ -175,7 +175,7 @@ def update_noise_profile(audio_path: Path) -> bool:
 
 
 def clean_audio(input_path: Path, output_path: Path) -> bool:
-    """Clean audio using sox: noise reduction, filters, normalization."""
+    """Clean audio using sox: TEST 19 pipeline (noise reduction, filters, compand, EQ, norm, resample)."""
     try:
         # Use adaptive noise profile if available, otherwise create from first 0.5s
         if NOISE_PROFILE.exists():
@@ -192,13 +192,18 @@ def clean_audio(input_path: Path, output_path: Path) -> bool:
             ]
             subprocess.run(cmd1, check=True, capture_output=True)
         
-        # Apply noise reduction and filters
+        # Apply enhanced pipeline: noise reduction, tighter bandpass for speech, compand, dual EQ, normalize, resample to 16kHz mono
         cmd2 = [
             "sox", str(input_path), str(output_path),
             "noisered", str(noise_prof), "0.21",
-            "highpass", "200",
-            "treble", "6",
-            "norm", "-3"
+            "highpass", "300",           # Higher to remove more room rumble/echo
+            "lowpass", "3000",            # Tighter for speech intelligibility band
+            "compand", "0.03,0.15", "6:-70,-65,-40", "-5", "-90", "0.05",  # Faster attack/release, more aggressive
+            "equalizer", "800", "400", "4",   # Boost lower speech frequencies more
+            "equalizer", "2500", "800", "3",  # Boost upper speech frequencies
+            "norm", "-3",
+            "rate", "16k",
+            "channels", "1"
         ]
         subprocess.run(cmd2, check=True, capture_output=True)
         
@@ -206,10 +211,6 @@ def clean_audio(input_path: Path, output_path: Path) -> bool:
         if cleanup_prof:
             noise_prof.unlink(missing_ok=True)
         return True
-        
-    except subprocess.CalledProcessError as e:
-        print(f"Audio cleaning failed: {e}")
-        return False
         
     except subprocess.CalledProcessError as e:
         print(f"Audio cleaning failed: {e}")
