@@ -28,10 +28,11 @@ NOISE_PROFILE = Path(__file__).parent / "temp" / "ambient_noise.prof"
 # Audio settings
 SAMPLE_RATE = 44100
 CHANNELS = 2
-SILENCE_THRESHOLD = 200  # RMS peak threshold for silence detection (lowered for better sensitivity)
+SILENCE_THRESHOLD = 200  # RMS peak threshold for silence detection
 # Windowed RMS config: speech is intermittent; use peak of window RMS
 RMS_WINDOW_SECS = 0.05  # 50ms window
 RMS_PERCENTILE = 90     # percentile of window RMS (for stats only)
+SPEECH_VARIANCE_THRESHOLD = 0.3  # Coefficient of variation - speech has high variance in RMS
 VLC_CPU_THRESHOLD = 5.0  # percent; if VLC above this, assume playing
 VLC_CHECK_INTERVAL = 0.5  # seconds for cpu sampling
 
@@ -129,8 +130,12 @@ def record_audio(output_path: Path, duration: int) -> bool:
 
 
 def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
-    """Check if audio is silent using windowed RMS stats.
-    Returns (is_silent, stats) where stats contains mean/peak/percentile RMS."""
+    """Check if audio is silent using windowed RMS stats and speech pattern detection.
+    
+    Speech has characteristic peaks and troughs (high variance in RMS).
+    Environmental noise is relatively flat (low variance in RMS).
+    
+    Returns (is_silent, stats) where stats contains mean/peak/percentile RMS and variance info."""
     try:
         with wave.open(str(wav_path), 'rb') as wf:
             n_channels = wf.getnchannels()
@@ -146,7 +151,7 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
             audio = audio.reshape(-1, n_channels).mean(axis=1).astype(np.int16)
 
         if audio.size == 0:
-            return True, {"mean": 0.0, "peak": 0.0, "perc": 0.0}
+            return True, {"mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0, "is_speech": False}
 
         # Windowed RMS
         win_samples = max(1, int(framerate * RMS_WINDOW_SECS))
@@ -160,14 +165,36 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
         mean_rms = float(np.mean(rms_windows))
         peak_rms = float(np.max(rms_windows))
         perc_rms = float(np.percentile(rms_windows, RMS_PERCENTILE))
-
-        stats = {"mean": mean_rms, "peak": peak_rms, "perc": perc_rms}
-        # Decide speech presence using peak RMS against threshold
-        is_silent = peak_rms < SILENCE_THRESHOLD
+        
+        # Calculate coefficient of variation (CV = std / mean)
+        # Speech has high variance (syllables, pauses)
+        # Noise is relatively flat
+        std_rms = float(np.std(rms_windows))
+        cv = std_rms / mean_rms if mean_rms > 0 else 0.0
+        
+        # Decide speech presence using both peak RMS and pattern variance
+        # TRUE SPEECH requires BOTH conditions:
+        #   1. High RMS peaks (speech is loud)
+        #   2. High variance (peaks and troughs from syllables/pauses)
+        # False positives have only one:
+        #   - High peak + flat pattern = single loud burst (keyboard, aircon spike)
+        #   - Low peak + high variance = still below speech threshold
+        has_speech_pattern = cv > SPEECH_VARIANCE_THRESHOLD
+        peak_exceeds_threshold = peak_rms > SILENCE_THRESHOLD
+        is_silent = not (has_speech_pattern and peak_exceeds_threshold)
+        
+        stats = {
+            "mean": mean_rms, 
+            "peak": peak_rms, 
+            "perc": perc_rms,
+            "variance": cv,
+            "is_speech": has_speech_pattern,
+            "peak_threshold": peak_exceeds_threshold
+        }
         return is_silent, stats
     except Exception as e:
         print(f"Error checking silence: {e}")
-        return False, {"mean": 0.0, "peak": 0.0, "perc": 0.0}
+        return False, {"mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0, "is_speech": False}
 
 
 def update_noise_profile(audio_path: Path) -> bool:
@@ -387,9 +414,10 @@ def main():
             
             # Check if audio is silent and log RMS value (using overlapped audio)
             is_silent, stats = is_audio_silent(overlapped_audio)
-            print(f"RMS_mean={stats['mean']:.2f} RMS_peak={stats['peak']:.2f} RMS_p{RMS_PERCENTILE}={stats['perc']:.2f} (threshold {SILENCE_THRESHOLD})")
+            print(f"RMS_mean={stats['mean']:.2f} RMS_peak={stats['peak']:.2f} RMS_p{RMS_PERCENTILE}={stats['perc']:.2f} variance={stats['variance']:.3f} (speech_pattern={stats['is_speech']}, peak_exceed={stats['peak_threshold']})")
             if is_silent:
-                print("Audio considered silent, skipping transcription.")
+                reason = "flat noise pattern" if not stats['is_speech'] else "low peak levels"
+                print(f"Audio considered silent ({reason}), skipping transcription.")
                 # Update noise profile from this silent recording for adaptive noise reduction
                 update_noise_profile(overlapped_audio)
                 # Keep file for debugging; cleanup will prune older ones
