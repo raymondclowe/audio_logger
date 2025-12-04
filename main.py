@@ -16,7 +16,7 @@ import psutil
 import wave
 
 # Configuration
-AUDIO_DEVICE = "plughw:3,0"
+AUDIO_DEVICE = "plughw:0,0"
 RECORD_DURATION = 60  # seconds
 OVERLAP_DURATION = 2  # seconds - overlap between chunks to avoid word breaks
 TRANSCRIBE_URL = "http://192.168.0.142:8085/transcribe"
@@ -28,7 +28,7 @@ NOISE_PROFILE = Path(__file__).parent / "temp" / "ambient_noise.prof"
 # Audio settings
 SAMPLE_RATE = 44100
 CHANNELS = 2
-SILENCE_THRESHOLD = 600  # RMS peak threshold for silence detection
+SILENCE_THRESHOLD = 200  # RMS peak threshold for silence detection (lowered for better sensitivity)
 # Windowed RMS config: speech is intermittent; use peak of window RMS
 RMS_WINDOW_SECS = 0.05  # 50ms window
 RMS_PERCENTILE = 90     # percentile of window RMS (for stats only)
@@ -45,6 +45,14 @@ def setup_directories():
     """Create necessary directories."""
     LOG_DIR.mkdir(exist_ok=True)
     TEMP_DIR.mkdir(exist_ok=True)
+
+
+def set_file_permissions(file_path: Path):
+    """Set file permissions to 0640 (rw-r-----) for security."""
+    try:
+        file_path.chmod(0o640)
+    except Exception:
+        pass  # Continue if permission setting fails
 
 
 def get_daily_log_path():
@@ -72,6 +80,7 @@ def create_overlapped_audio(current_path: Path, output_path: Path) -> bool:
                 "sox", str(overlap_temp), str(current_path), str(output_path)
             ]
             subprocess.run(cmd_concat, check=True, capture_output=True)
+            set_file_permissions(output_path)
             
             # Cleanup temp overlap file
             overlap_temp.unlink(missing_ok=True)
@@ -80,22 +89,24 @@ def create_overlapped_audio(current_path: Path, output_path: Path) -> bool:
             # No overlap available, just copy current
             import shutil
             shutil.copy(current_path, output_path)
+            set_file_permissions(output_path)
             return True
             
     except Exception as e:
         print(f"Failed to create overlap, using current audio only: {e}")
         import shutil
         shutil.copy(current_path, output_path)
+        set_file_permissions(output_path)
         return True
 
 
 def record_audio(output_path: Path, duration: int) -> bool:
     """Record audio to a WAV file with gain boost."""
     try:
-        # First set ALSA capture volume to maximum for the device
+        # Set ALSA capture volume to maximum for the USB device
         try:
             subprocess.run(
-                ["amixer", "-c", "3", "set", "Capture", "100%"],
+                ["amixer", "-c", "0", "cset", "numid=3", "16"],
                 capture_output=True, timeout=2
             )
         except Exception:
@@ -110,6 +121,7 @@ def record_audio(output_path: Path, duration: int) -> bool:
             str(output_path)
         ]
         subprocess.run(cmd, check=True, capture_output=True)
+        set_file_permissions(output_path)
         return True
     except subprocess.CalledProcessError as e:
         print(f"Recording failed: {e}")
@@ -168,6 +180,7 @@ def update_noise_profile(audio_path: Path) -> bool:
         ]
         subprocess.run(cmd, check=True, capture_output=True)
         print(f"Updated noise profile from {audio_path.name}")
+        set_file_permissions(NOISE_PROFILE)
         return True
     except subprocess.CalledProcessError as e:
         print(f"Failed to update noise profile: {e}")
@@ -191,6 +204,7 @@ def clean_audio(input_path: Path, output_path: Path) -> bool:
                 "noiseprof", str(noise_prof)
             ]
             subprocess.run(cmd1, check=True, capture_output=True)
+        set_file_permissions(noise_prof)
         
         # Apply enhanced pipeline: noise reduction, tighter bandpass for speech, compand, dual EQ, normalize, resample to 16kHz mono
         cmd2 = [
@@ -206,6 +220,7 @@ def clean_audio(input_path: Path, output_path: Path) -> bool:
             "channels", "1"
         ]
         subprocess.run(cmd2, check=True, capture_output=True)
+        set_file_permissions(output_path)
         
         # Clean up temporary noise profile if created
         if cleanup_prof:
@@ -301,6 +316,7 @@ def log_transcript(text: str, stats: dict = None, filename: str = None):
                     f.write(f" file={filename}")
                 f.write(f"\n")
             f.write(f"[{timestamp}] {text}\n")
+        set_file_permissions(log_path)
         print(f"[{timestamp}] Logged: {text}")
     except Exception as e:
         print(f"Failed to write log: {e}")
