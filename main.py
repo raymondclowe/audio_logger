@@ -15,6 +15,8 @@ import requests
 import numpy as np
 import psutil
 import wave
+import threading
+import queue
 
 # Debug flag - check CLI argument and .debug file in working directory
 DEBUG = "--debug" in sys.argv or Path(".debug").exists()
@@ -40,9 +42,12 @@ SPEECH_MULTIPLIER = 3.5  # Speech must be this many times above silence baseline
 SPEECH_VARIANCE_THRESHOLD = 0.4  # Coefficient of variation for speech pattern detection (raised from 0.3)
 ENVIRONMENT_UPDATE_THRESHOLD = 0.5  # If no speech found this many times, re-baseline
 ABSOLUTE_SPEECH_MINIMUM = 80  # Conservative absolute minimum for speech (lowered for portability)
-# Windowed RMS config: speech is intermittent; use peak of window RMS
+# Spike filtering - reject audio with isolated loud peaks (clicks, pops)
+PEAK_TO_MEAN_MAX_RATIO = 5.0  # If peak/mean > 5, likely a transient spike, not speech
+PEAK_TO_P90_MAX_RATIO = 4.0   # If peak/P90 > 4, likely a transient spike
+# Windowed RMS config: speech is intermittent; use P90 of window RMS for decisions (more stable than peak)
 RMS_WINDOW_SECS = 0.05  # 50ms window
-RMS_PERCENTILE = 90     # percentile of window RMS (for stats only)
+RMS_PERCENTILE = 90     # percentile of window RMS (use for decisions, more stable than peak)
 VLC_CPU_THRESHOLD = 5.0  # percent; if VLC above this, assume playing
 VLC_CHECK_INTERVAL = 0.5  # seconds for cpu sampling
 
@@ -93,9 +98,9 @@ class AudioBaseline:
             if DEBUG:
                 print(f"⚠ Could not save baseline: {e}")
     
-    def add_silent_sample(self, peak_rms: float):
-        """Record a peak RMS from a confirmed silent period."""
-        self.silent_peaks.append(peak_rms)
+    def add_silent_sample(self, p90_rms: float):
+        """Record a P90 RMS from a confirmed silent period."""
+        self.silent_peaks.append(p90_rms)
         # Keep only recent samples (last 20) to adapt to environment changes
         if len(self.silent_peaks) > 20:
             self.silent_peaks = self.silent_peaks[-20:]
@@ -359,15 +364,17 @@ def record_audio(output_path: Path, duration: int) -> bool:
 
 
 def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
-    """Check if audio is silent using adaptive baseline and speech pattern detection.
+    """Multi-algorithm speech detection with voting.
     
-    Process:
-    1. Quick check: If peak < baseline * 1.3, definitely silent
-    2. Medium check: If peak < baseline * 2.5, probably environmental noise
-    3. Speech candidate: If peak >= baseline * 2.5, check acoustic patterns
-    4. Pattern check: High variance = speech, low variance = noise
+    Uses 4 independent algorithms that each vote on whether audio contains speech:
+    1. Energy-based: P90 RMS vs adaptive baseline threshold
+    2. Spike filter: Rejects isolated transient peaks (peak/mean ratio)
+    3. Acoustic pattern: High variance indicates natural speech vs flat noise
+    4. Spectral richness: Multiple frequency components vs single tone
     
-    Returns (is_silent, stats) dict with full analysis."""
+    Decision: Speech requires 2+ votes. This is much more robust than any single algorithm.
+    
+    Returns (is_silent, stats) dict with votes and analysis."""
     try:
         with wave.open(str(wav_path), 'rb') as wf:
             n_channels = wf.getnchannels()
@@ -384,15 +391,17 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
         if audio.size == 0:
             return True, {
                 "mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0,
-                "is_speech": False, "reason": "empty"
+                "is_speech": False, "reason": "empty", "votes": {"energy": False, "spike_filter": True, "pattern": False, "spectral": False}
             }
 
         # Windowed RMS analysis
         win_samples = max(1, int(framerate * RMS_WINDOW_SECS))
         pad = (-audio.size) % win_samples
         if pad:
-            audio = np.pad(audio, (0, pad), mode='constant')
-        windows = audio.reshape(-1, win_samples).astype(np.float64)
+            audio_padded = np.pad(audio, (0, pad), mode='constant')
+        else:
+            audio_padded = audio
+        windows = audio_padded.reshape(-1, win_samples).astype(np.float64)
         rms_windows = np.sqrt(np.mean(windows ** 2, axis=1))
 
         mean_rms = float(np.mean(rms_windows))
@@ -406,31 +415,93 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
         definitely_quiet = BASELINE.get_definitely_quiet_threshold()
         speech_minimum = max(BASELINE.get_speech_minimum(), ABSOLUTE_SPEECH_MINIMUM)
         
-        # Decision tree
-        if peak_rms < definitely_quiet:
-            # Definitely silent - update baseline
+        # ===== VOTE 1: Energy-based detection =====
+        # Speech should have P90 RMS well above baseline
+        vote_energy = perc_rms >= speech_minimum and perc_rms >= definitely_quiet
+        
+        # ===== VOTE 2: Spike filter (vote AGAINST speech if transient) =====
+        # Reject if peak/mean ratio is extremely high (isolated click/pop)
+        peak_to_mean_ratio = peak_rms / mean_rms if mean_rms > 0 else 1.0
+        peak_to_p90_ratio = peak_rms / perc_rms if perc_rms > 0 else 1.0
+        # If spike is extreme, vote NO (return True to filter it out)
+        vote_spike_filter = not (peak_to_mean_ratio > PEAK_TO_MEAN_MAX_RATIO or peak_to_p90_ratio > PEAK_TO_P90_MAX_RATIO)
+        
+        # ===== VOTE 3: Acoustic pattern (variance/CV) =====
+        # Speech has natural variation in amplitude (peaks and valleys)
+        vote_pattern = cv > SPEECH_VARIANCE_THRESHOLD
+        
+        # ===== VOTE 4: Spectral richness =====
+        # Speech has energy across multiple frequency bands, not single tone
+        # Analyze high frequencies vs low frequencies
+        try:
+            # Simple frequency-domain check: compute RMS in speech frequency ranges
+            # Low frequencies (200-800 Hz), mid (800-2000 Hz), high (2000-3400 Hz)
+            n_fft = min(2048, len(audio_padded))
+            # Normalize audio
+            audio_norm = audio_padded.astype(np.float64) / (np.max(np.abs(audio_padded)) + 1e-10)
+            
+            # Compute spectrum (simple approach: energy in different bands)
+            freq_bins = np.abs(np.fft.rfft(audio_norm, n=n_fft))
+            freq_bins_smooth = np.convolve(freq_bins, np.ones(5)/5, mode='same')  # Smooth to reduce noise
+            
+            # Define band indices (very approximate based on sampling rate)
+            bin_per_hz = n_fft / (2 * framerate)
+            low_band = freq_bins_smooth[int(200 * bin_per_hz):int(800 * bin_per_hz)]
+            mid_band = freq_bins_smooth[int(800 * bin_per_hz):int(2000 * bin_per_hz)]
+            high_band = freq_bins_smooth[int(2000 * bin_per_hz):int(3400 * bin_per_hz)]
+            
+            # Speech should have energy across bands (not dominated by one)
+            if len(low_band) > 0 and len(mid_band) > 0 and len(high_band) > 0:
+                total_energy = np.sum(low_band) + np.sum(mid_band) + np.sum(high_band)
+                # If any single band has > 70% of energy, it's likely not speech (single tone or noise)
+                max_band_ratio = max(np.sum(low_band), np.sum(mid_band), np.sum(high_band)) / (total_energy + 1e-10)
+                vote_spectral = max_band_ratio < 0.7  # Speech spreads energy across bands
+            else:
+                vote_spectral = False  # Not enough data
+        except Exception:
+            vote_spectral = False  # If spectral analysis fails, don't vote
+        
+        # ===== VOTING DECISION =====
+        votes = {
+            "energy": vote_energy,
+            "spike_filter": vote_spike_filter,
+            "pattern": vote_pattern,
+            "spectral": vote_spectral
+        }
+        
+        # Count votes FOR speech (all must pass spike filter, then need 2+ other votes)
+        speech_votes = sum([vote_energy, vote_pattern, vote_spectral])
+        
+        # Speech requires:
+        # 1. Pass the spike filter (not a transient)
+        # 2. At least 2 votes from energy/pattern/spectral
+        is_likely_speech = vote_spike_filter and speech_votes >= 2
+        
+        # Determine reason and update baseline
+        if perc_rms < definitely_quiet:
             reason = "quiet"
             is_silent = True
             is_speech = False
-            BASELINE.add_silent_sample(peak_rms)
-        elif peak_rms < speech_minimum:
-            # Intermediate zone - probably just environment noise
+            BASELINE.add_silent_sample(perc_rms)
+        elif perc_rms < speech_minimum:
             reason = "below_speech_minimum"
             is_silent = True
             is_speech = False
+        elif not vote_spike_filter:
+            reason = f"transient_spike (peak_ratio={peak_to_mean_ratio:.1f}x)"
+            is_silent = True
+            is_speech = False
+            BASELINE.record_no_speech()
+        elif is_likely_speech:
+            reason = f"speech_detected ({speech_votes}_votes)"
+            is_silent = False
+            is_speech = True
+            BASELINE.reset_no_speech_counter()
         else:
-            # Loud enough to be speech - check acoustic pattern
-            has_speech_pattern = cv > SPEECH_VARIANCE_THRESHOLD
-            if has_speech_pattern:
-                reason = "speech_detected"
-                is_silent = False
-                is_speech = True
-                BASELINE.reset_no_speech_counter()
-            else:
-                reason = "high_but_flat"
-                is_silent = True
-                is_speech = False
-                BASELINE.record_no_speech()
+            reason = f"rejected ({speech_votes}_votes)"
+            is_silent = True
+            is_speech = False
+            BASELINE.record_no_speech()
         
         stats = {
             "mean": mean_rms,
@@ -439,6 +510,9 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
             "variance": cv,
             "is_speech": is_speech,
             "reason": reason,
+            "votes": votes,
+            "vote_count": speech_votes,
+            "peak_ratio": peak_to_mean_ratio,
             "baselines": {
                 "silence": silence_baseline,
                 "quiet": definitely_quiet,
@@ -452,8 +526,9 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
             print(f"Error checking silence: {e}")
         return False, {
             "mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0,
-            "is_speech": False, "reason": "error"
+            "is_speech": False, "reason": "error", "votes": {"energy": False, "spike_filter": True, "pattern": False, "spectral": False}
         }
+
 
 
 def update_noise_profile(audio_path: Path) -> bool:
@@ -646,8 +721,71 @@ def cleanup_temp_files(max_age_hours: int = 12, keep_last_n_wavs: int = 5):
             print(f"Cleanup failed: {e}")
 
 
+def process_audio_worker(task_queue):
+    """Background worker thread that processes audio files without blocking recording."""
+    global PREVIOUS_AUDIO
+    
+    while True:
+        try:
+            task = task_queue.get()
+            if task is None:  # Shutdown signal
+                break
+                
+            raw_audio, overlapped_audio, clean_audio_path, timestamp = task
+            
+            # Check if audio is silent and log RMS value (using overlapped audio)
+            is_silent, stats = is_audio_silent(overlapped_audio)
+            
+            # Format detailed diagnostic output (debug only)
+            if DEBUG:
+                baselines = stats.get('baselines', {})
+                learning_status = " [LEARNING]" if stats.get('learning') else ""
+                print(f"[{timestamp}] RMS peak={stats['peak']:.1f} mean={stats['mean']:.1f} var={stats['variance']:.3f}{learning_status}")
+                print(f"  Thresholds: quiet<{baselines.get('quiet', 0):.0f} speech>{baselines.get('speech_min', 0):.0f} Reason: {stats['reason']}")
+            
+            if is_silent:
+                update_noise_profile(overlapped_audio)
+                # Keep file for debugging; cleanup will prune older ones
+                task_queue.task_done()
+                continue
+            
+            # Clean audio (use overlapped version)
+            if DEBUG:
+                print(f"[{timestamp}] Cleaning audio...")
+            if not clean_audio(overlapped_audio, clean_audio_path):
+                if DEBUG:
+                    print(f"[{timestamp}] Audio cleaning failed, skipping transcription.")
+                try:
+                    raw_audio.unlink()
+                except Exception:
+                    pass
+                task_queue.task_done()
+                continue
+            
+            # Transcribe
+            if DEBUG:
+                print(f"[{timestamp}] Transcribing...")
+            transcript = transcribe_audio(clean_audio_path)
+            
+            # Log the result
+            if transcript:
+                log_transcript(transcript, stats, raw_audio.name)
+            elif DEBUG:
+                print(f"[{timestamp}] No transcript generated.")
+            
+            # Cleanup temporary files (keep last few wavs for debugging)
+            cleanup_temp_files()
+            
+            task_queue.task_done()
+            
+        except Exception as e:
+            if DEBUG:
+                print(f"Error in processing worker: {e}")
+            task_queue.task_done()
+
+
 def main():
-    """Main loop: record, clean, transcribe, log."""
+    """Main loop: continuous recording with background processing."""
     global PREVIOUS_AUDIO
     if DEBUG:
         print("Starting audio logger service...")
@@ -659,6 +797,11 @@ def main():
     else:
         print(f"Using configured audio device: {AUDIO_DEVICE}")
     
+    # Start background processing thread
+    processing_queue = queue.Queue(maxsize=5)  # Limit queue to prevent memory buildup
+    worker_thread = threading.Thread(target=process_audio_worker, args=(processing_queue,), daemon=True)
+    worker_thread.start()
+    
     while True:
         try:
             # Pause logging if VLC is actively playing
@@ -667,6 +810,7 @@ def main():
                     print("VLC activity detected; pausing recording for this cycle.")
                 time.sleep(5)
                 continue
+            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             raw_audio = TEMP_DIR / f"raw_{timestamp}.wav"
             overlapped_audio = TEMP_DIR / f"overlapped_{timestamp}.wav"
@@ -675,60 +819,34 @@ def main():
             if DEBUG:
                 print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Recording for {RECORD_DURATION} seconds...")
             
-            # Record audio
+            # Record audio (BLOCKS for 60 seconds - this is unavoidable)
             if not record_audio(raw_audio, RECORD_DURATION):
                 if DEBUG:
                     print("Recording failed, retrying...")
                 time.sleep(5)
                 continue
             
-            # Create overlapped version with previous recording
+            # Create overlapped version with previous recording (fast, <1s)
             create_overlapped_audio(raw_audio, overlapped_audio)
             
             # Update previous audio reference for next iteration
             PREVIOUS_AUDIO = raw_audio
             
-            # Check if audio is silent and log RMS value (using overlapped audio)
-            is_silent, stats = is_audio_silent(overlapped_audio)
-            
-            # Format detailed diagnostic output (debug only)
-            if DEBUG:
-                baselines = stats.get('baselines', {})
-                learning_status = " [LEARNING]" if stats.get('learning') else ""
-                print(f"RMS peak={stats['peak']:.1f} mean={stats['mean']:.1f} var={stats['variance']:.3f}{learning_status}")
-                print(f"  Thresholds: quiet<{baselines.get('quiet', 0):.0f} speech>{baselines.get('speech_min', 0):.0f} Reason: {stats['reason']}")
-            
-            if is_silent:
-                update_noise_profile(overlapped_audio)
-                # Keep file for debugging; cleanup will prune older ones
-                continue
-            
-            # Clean audio (use overlapped version)
-            if DEBUG:
-                print("Cleaning audio...")
-            if not clean_audio(overlapped_audio, clean_audio_path):
+            # Submit to background worker for processing
+            # This is non-blocking! Recording will continue immediately
+            try:
+                processing_queue.put((raw_audio, overlapped_audio, clean_audio_path, timestamp), block=False)
                 if DEBUG:
-                    print("Audio cleaning failed, skipping transcription.")
-                raw_audio.unlink()
-                continue
-            
-            # Transcribe
-            if DEBUG:
-                print("Transcribing...")
-            transcript = transcribe_audio(clean_audio_path)
-            
-            # Log the result
-            if transcript:
-                log_transcript(transcript, stats, raw_audio.name)
-            elif DEBUG:
-                print("No transcript generated.")
-            
-            # Cleanup temporary files (keep last few wavs for debugging)
-            cleanup_temp_files()
+                    print(f"[{timestamp}] Queued for processing (queue size: {processing_queue.qsize()})")
+            except queue.Full:
+                if DEBUG:
+                    print(f"[{timestamp}] Processing queue full, skipping this segment")
             
         except KeyboardInterrupt:
             if DEBUG:
                 print("\nStopping audio logger...")
+            processing_queue.put(None)  # Signal worker to shut down
+            worker_thread.join(timeout=5)
             break
         except Exception as e:
             if DEBUG:
