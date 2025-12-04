@@ -24,15 +24,20 @@ TRANSCRIBE_MODEL = "small"
 LOG_DIR = Path(__file__).parent / "logs"
 TEMP_DIR = Path(__file__).parent / "temp"
 NOISE_PROFILE = Path(__file__).parent / "temp" / "ambient_noise.prof"
+BASELINE_FILE = Path(__file__).parent / "temp" / "audio_baseline.json"
 
 # Audio settings
 SAMPLE_RATE = 44100
 CHANNELS = 2
-SILENCE_THRESHOLD = 200  # RMS peak threshold for silence detection
+# Adaptive thresholds - will be learned from silent periods
+SILENCE_BASELINE_SAMPLES = 10  # Collect this many silent recordings before stabilizing
+BASELINE_MARGIN = 1.3  # 30% margin above silence baseline for "definitely quiet"
+SPEECH_MULTIPLIER = 2.5  # Speech must be this many times above silence baseline
+SPEECH_VARIANCE_THRESHOLD = 0.3  # Coefficient of variation for speech pattern detection
+ENVIRONMENT_UPDATE_THRESHOLD = 0.5  # If no speech found this many times, re-baseline
 # Windowed RMS config: speech is intermittent; use peak of window RMS
 RMS_WINDOW_SECS = 0.05  # 50ms window
 RMS_PERCENTILE = 90     # percentile of window RMS (for stats only)
-SPEECH_VARIANCE_THRESHOLD = 0.3  # Coefficient of variation - speech has high variance in RMS
 VLC_CPU_THRESHOLD = 5.0  # percent; if VLC above this, assume playing
 VLC_CHECK_INTERVAL = 0.5  # seconds for cpu sampling
 
@@ -40,6 +45,92 @@ VLC_CHECK_INTERVAL = 0.5  # seconds for cpu sampling
 LAST_TRANSCRIPT = None
 CONTEXT_WORDS = 30  # Number of words to include from previous transcript
 PREVIOUS_AUDIO = None  # Store path to previous recording for overlap
+
+
+class AudioBaseline:
+    """Adaptive baseline threshold manager.
+    
+    Learns from silent periods to establish dynamic thresholds that adapt to
+    environment (room, microphone, ambient noise level).
+    """
+    
+    def __init__(self, baseline_file: Path):
+        self.baseline_file = baseline_file
+        self.silent_peaks = []  # RMS peaks from confirmed silent periods
+        self.no_speech_count = 0  # Consecutive segments with no speech pattern
+        self.is_learning = True  # In learning mode until we have enough samples
+        self.load()
+    
+    def load(self):
+        """Load baseline from file if it exists."""
+        try:
+            if self.baseline_file.exists():
+                import json
+                with open(self.baseline_file, 'r') as f:
+                    data = json.load(f)
+                    self.silent_peaks = data.get('silent_peaks', [])
+                    self.is_learning = len(self.silent_peaks) < SILENCE_BASELINE_SAMPLES
+                    if not self.is_learning:
+                        print(f"✓ Loaded baseline from {self.baseline_file.name}")
+                        print(f"  Silence baseline (P10): {self.get_silence_baseline():.1f}")
+        except Exception as e:
+            print(f"⚠ Could not load baseline: {e}")
+    
+    def save(self):
+        """Save baseline to file."""
+        try:
+            import json
+            TEMP_DIR.mkdir(exist_ok=True)
+            with open(self.baseline_file, 'w') as f:
+                json.dump({'silent_peaks': self.silent_peaks}, f)
+        except Exception as e:
+            print(f"⚠ Could not save baseline: {e}")
+    
+    def add_silent_sample(self, peak_rms: float):
+        """Record a peak RMS from a confirmed silent period."""
+        self.silent_peaks.append(peak_rms)
+        # Keep only recent samples (last 20) to adapt to environment changes
+        if len(self.silent_peaks) > 20:
+            self.silent_peaks = self.silent_peaks[-20:]
+        self.is_learning = len(self.silent_peaks) < SILENCE_BASELINE_SAMPLES
+        self.no_speech_count = 0  # Reset counter
+        self.save()
+        
+        if self.is_learning:
+            print(f"  Learning baseline ({len(self.silent_peaks)}/{SILENCE_BASELINE_SAMPLES})")
+        else:
+            print(f"  Baseline updated: {self.get_silence_baseline():.1f}")
+    
+    def record_no_speech(self):
+        """Record that we detected high RMS but no speech pattern."""
+        self.no_speech_count += 1
+        if self.no_speech_count >= 3:
+            print(f"⚠ Background noise increased ({self.no_speech_count}x no-speech detections)")
+            print(f"  Consider environment change (new AC, window open, etc.)")
+    
+    def reset_no_speech_counter(self):
+        """Speech was detected, reset counter."""
+        self.no_speech_count = 0
+    
+    def get_silence_baseline(self) -> float:
+        """Get baseline threshold (P10 of silent peaks)."""
+        if not self.silent_peaks:
+            return 150  # Conservative default if no data yet
+        return float(np.percentile(self.silent_peaks, 10))
+    
+    def get_speech_minimum(self) -> float:
+        """Get minimum RMS needed to consider as potential speech."""
+        baseline = self.get_silence_baseline()
+        return baseline * SPEECH_MULTIPLIER
+    
+    def get_definitely_quiet_threshold(self) -> float:
+        """Get threshold below which audio is definitely quiet."""
+        baseline = self.get_silence_baseline()
+        return baseline * BASELINE_MARGIN
+
+
+# Initialize global baseline manager
+BASELINE = AudioBaseline(BASELINE_FILE)
 
 
 def setup_directories():
