@@ -20,7 +20,7 @@ import wave
 DEBUG = "--debug" in sys.argv or Path(".debug").exists()
 
 # Configuration
-AUDIO_DEVICE = "plughw:0,0"
+AUDIO_DEVICE = None  # Will be auto-detected at startup
 RECORD_DURATION = 60  # seconds
 OVERLAP_DURATION = 2  # seconds - overlap between chunks to avoid word breaks
 TRANSCRIBE_URL = "http://192.168.0.142:8085/transcribe"
@@ -154,6 +154,131 @@ def set_file_permissions(file_path: Path):
         pass  # Continue if permission setting fails
 
 
+def detect_audio_devices():
+    """Detect available audio capture devices.
+    Returns list of tuples: (card_num, device_num, device_name)
+    """
+    try:
+        result = subprocess.run(
+            ["arecord", "-l"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        devices = []
+        for line in result.stdout.split('\n'):
+            # Parse lines like: "card 3: Device [USB Audio Device], device 0: USB Audio [USB Audio]"
+            if line.startswith('card '):
+                parts = line.split(':')
+                if len(parts) >= 2:
+                    card_info = parts[0].strip()
+                    card_num = card_info.split()[1]
+                    device_info = parts[1].strip().split(',')
+                    if len(device_info) >= 2:
+                        device_name = device_info[0].strip()
+                        device_num_str = device_info[1].strip().split()[1]
+                        devices.append((card_num, device_num_str, device_name))
+        
+        return devices
+    except Exception as e:
+        if DEBUG:
+            print(f"Failed to detect audio devices: {e}")
+        return []
+
+
+def test_audio_device(card: str, device: str, duration: float = 1.0):
+    """Test if an audio device is active by recording a short sample.
+    Returns (success, peak_rms) tuple.
+    """
+    try:
+        test_file = TEMP_DIR / f"test_card{card}_dev{device}.wav"
+        cmd = [
+            "arecord",
+            "-D", f"plughw:{card},{device}",
+            "-d", str(duration),
+            "-f", "cd",
+            "-t", "wav",
+            str(test_file)
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, timeout=duration + 2)
+        
+        if result.returncode == 0 and test_file.exists():
+            # Check RMS level
+            try:
+                with wave.open(str(test_file), 'rb') as wf:
+                    frames = wf.readframes(wf.getnframes())
+                    audio = np.frombuffer(frames, dtype=np.int16)
+                    if wf.getnchannels() > 1:
+                        audio = audio.reshape(-1, wf.getnchannels()).mean(axis=1)
+                    peak_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+                    test_file.unlink(missing_ok=True)
+                    return (True, peak_rms)
+            except Exception:
+                test_file.unlink(missing_ok=True)
+                return (False, 0.0)
+        
+        test_file.unlink(missing_ok=True)
+        return (False, 0.0)
+        
+    except Exception as e:
+        if DEBUG:
+            print(f"Failed to test device card{card},device{device}: {e}")
+        return (False, 0.0)
+
+
+def auto_detect_audio_device():
+    """Auto-detect the best audio capture device.
+    
+    Strategy:
+    1. If only one device found, use it
+    2. If multiple devices, test each for 1 second and pick the one with highest RMS
+    3. Fall back to plughw:0,0 if detection fails
+    """
+    global AUDIO_DEVICE
+    
+    devices = detect_audio_devices()
+    
+    if not devices:
+        if DEBUG:
+            print("⚠ No audio devices detected, using default plughw:0,0")
+        AUDIO_DEVICE = "plughw:0,0"
+        return
+    
+    if len(devices) == 1:
+        card, device, name = devices[0]
+        AUDIO_DEVICE = f"plughw:{card},{device}"
+        print(f"✓ Auto-detected single audio device: {AUDIO_DEVICE} ({name})")
+        return
+    
+    # Multiple devices - test each and pick the most active one
+    print(f"Found {len(devices)} audio devices, testing...")
+    best_device = None
+    best_rms = 0.0
+    
+    for card, device, name in devices:
+        device_id = f"plughw:{card},{device}"
+        if DEBUG:
+            print(f"  Testing {device_id} ({name})...")
+        success, rms = test_audio_device(card, device, duration=1.0)
+        if success:
+            if DEBUG:
+                print(f"    RMS: {rms:.1f}")
+            if rms > best_rms:
+                best_rms = rms
+                best_device = (device_id, name)
+    
+    if best_device:
+        AUDIO_DEVICE = best_device[0]
+        print(f"✓ Selected most active device: {AUDIO_DEVICE} ({best_device[1]}) with RMS {best_rms:.1f}")
+    else:
+        # All tests failed, use first device
+        card, device, name = devices[0]
+        AUDIO_DEVICE = f"plughw:{card},{device}"
+        print(f"⚠ All device tests failed, using first device: {AUDIO_DEVICE} ({name})")
+
+
 def get_daily_log_path():
     """Get the path for today's log file."""
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -203,12 +328,15 @@ def create_overlapped_audio(current_path: Path, output_path: Path) -> bool:
 def record_audio(output_path: Path, duration: int) -> bool:
     """Record audio to a WAV file with gain boost."""
     try:
-        # Set ALSA capture volume to maximum for the USB device
+        # Set ALSA capture volume to maximum for the device
+        # Extract card number from AUDIO_DEVICE (e.g., "plughw:3,0" -> "3")
         try:
-            subprocess.run(
-                ["amixer", "-c", "0", "cset", "numid=3", "16"],
-                capture_output=True, timeout=2
-            )
+            if AUDIO_DEVICE and ':' in AUDIO_DEVICE:
+                card_num = AUDIO_DEVICE.split(':')[1].split(',')[0]
+                subprocess.run(
+                    ["amixer", "-c", card_num, "set", "Capture", "100%"],
+                    capture_output=True, timeout=2
+                )
         except Exception:
             pass  # Continue even if amixer fails
         
@@ -523,6 +651,12 @@ def main():
     if DEBUG:
         print("Starting audio logger service...")
     setup_directories()
+    
+    # Auto-detect audio device if not configured
+    if AUDIO_DEVICE is None:
+        auto_detect_audio_device()
+    else:
+        print(f"Using configured audio device: {AUDIO_DEVICE}")
     
     while True:
         try:
