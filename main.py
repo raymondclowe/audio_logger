@@ -221,12 +221,15 @@ def record_audio(output_path: Path, duration: int) -> bool:
 
 
 def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
-    """Check if audio is silent using windowed RMS stats and speech pattern detection.
+    """Check if audio is silent using adaptive baseline and speech pattern detection.
     
-    Speech has characteristic peaks and troughs (high variance in RMS).
-    Environmental noise is relatively flat (low variance in RMS).
+    Process:
+    1. Quick check: If peak < baseline * 1.3, definitely silent
+    2. Medium check: If peak < baseline * 2.5, probably environmental noise
+    3. Speech candidate: If peak >= baseline * 2.5, check acoustic patterns
+    4. Pattern check: High variance = speech, low variance = noise
     
-    Returns (is_silent, stats) where stats contains mean/peak/percentile RMS and variance info."""
+    Returns (is_silent, stats) dict with full analysis."""
     try:
         with wave.open(str(wav_path), 'rb') as wf:
             n_channels = wf.getnchannels()
@@ -235,18 +238,19 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
             n_frames = wf.getnframes()
             frames = wf.readframes(n_frames)
 
-        # 16-bit PCM expected; downmix to mono for RMS calc
-        dtype = np.int16 if sampwidth == 2 else np.int16
+        dtype = np.int16
         audio = np.frombuffer(frames, dtype=dtype)
         if n_channels > 1:
             audio = audio.reshape(-1, n_channels).mean(axis=1).astype(np.int16)
 
         if audio.size == 0:
-            return True, {"mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0, "is_speech": False}
+            return True, {
+                "mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0,
+                "is_speech": False, "reason": "empty"
+            }
 
-        # Windowed RMS
+        # Windowed RMS analysis
         win_samples = max(1, int(framerate * RMS_WINDOW_SECS))
-        # Pad to full windows
         pad = (-audio.size) % win_samples
         if pad:
             audio = np.pad(audio, (0, pad), mode='constant')
@@ -256,36 +260,61 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
         mean_rms = float(np.mean(rms_windows))
         peak_rms = float(np.max(rms_windows))
         perc_rms = float(np.percentile(rms_windows, RMS_PERCENTILE))
-        
-        # Calculate coefficient of variation (CV = std / mean)
-        # Speech has high variance (syllables, pauses)
-        # Noise is relatively flat
         std_rms = float(np.std(rms_windows))
         cv = std_rms / mean_rms if mean_rms > 0 else 0.0
         
-        # Decide speech presence using both peak RMS and pattern variance
-        # TRUE SPEECH requires BOTH conditions:
-        #   1. High RMS peaks (speech is loud)
-        #   2. High variance (peaks and troughs from syllables/pauses)
-        # False positives have only one:
-        #   - High peak + flat pattern = single loud burst (keyboard, aircon spike)
-        #   - Low peak + high variance = still below speech threshold
-        has_speech_pattern = cv > SPEECH_VARIANCE_THRESHOLD
-        peak_exceeds_threshold = peak_rms > SILENCE_THRESHOLD
-        is_silent = not (has_speech_pattern and peak_exceeds_threshold)
+        # Get adaptive thresholds based on learned silence baseline
+        silence_baseline = BASELINE.get_silence_baseline()
+        definitely_quiet = BASELINE.get_definitely_quiet_threshold()
+        speech_minimum = BASELINE.get_speech_minimum()
+        
+        # Decision tree
+        if peak_rms < definitely_quiet:
+            # Definitely silent - update baseline
+            reason = "quiet"
+            is_silent = True
+            is_speech = False
+            BASELINE.add_silent_sample(peak_rms)
+        elif peak_rms < speech_minimum:
+            # Intermediate zone - probably just environment noise
+            reason = "below_speech_minimum"
+            is_silent = True
+            is_speech = False
+        else:
+            # Loud enough to be speech - check acoustic pattern
+            has_speech_pattern = cv > SPEECH_VARIANCE_THRESHOLD
+            if has_speech_pattern:
+                reason = "speech_detected"
+                is_silent = False
+                is_speech = True
+                BASELINE.reset_no_speech_counter()
+            else:
+                reason = "high_but_flat"
+                is_silent = True
+                is_speech = False
+                BASELINE.record_no_speech()
         
         stats = {
-            "mean": mean_rms, 
-            "peak": peak_rms, 
+            "mean": mean_rms,
+            "peak": peak_rms,
             "perc": perc_rms,
             "variance": cv,
-            "is_speech": has_speech_pattern,
-            "peak_threshold": peak_exceeds_threshold
+            "is_speech": is_speech,
+            "reason": reason,
+            "baselines": {
+                "silence": silence_baseline,
+                "quiet": definitely_quiet,
+                "speech_min": speech_minimum
+            },
+            "learning": BASELINE.is_learning
         }
         return is_silent, stats
     except Exception as e:
         print(f"Error checking silence: {e}")
-        return False, {"mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0, "is_speech": False}
+        return False, {
+            "mean": 0.0, "peak": 0.0, "perc": 0.0, "variance": 0.0,
+            "is_speech": False, "reason": "error"
+        }
 
 
 def update_noise_profile(audio_path: Path) -> bool:
@@ -505,11 +534,14 @@ def main():
             
             # Check if audio is silent and log RMS value (using overlapped audio)
             is_silent, stats = is_audio_silent(overlapped_audio)
-            print(f"RMS_mean={stats['mean']:.2f} RMS_peak={stats['peak']:.2f} RMS_p{RMS_PERCENTILE}={stats['perc']:.2f} variance={stats['variance']:.3f} (speech_pattern={stats['is_speech']}, peak_exceed={stats['peak_threshold']})")
+            
+            # Format detailed diagnostic output
+            baselines = stats.get('baselines', {})
+            learning_status = " [LEARNING]" if stats.get('learning') else ""
+            print(f"RMS peak={stats['peak']:.1f} mean={stats['mean']:.1f} var={stats['variance']:.3f}{learning_status}")
+            print(f"  Thresholds: quiet<{baselines.get('quiet', 0):.0f} speech>{baselines.get('speech_min', 0):.0f} Reason: {stats['reason']}")
+            
             if is_silent:
-                reason = "flat noise pattern" if not stats['is_speech'] else "low peak levels"
-                print(f"Audio considered silent ({reason}), skipping transcription.")
-                # Update noise profile from this silent recording for adaptive noise reduction
                 update_noise_profile(overlapped_audio)
                 # Keep file for debugging; cleanup will prune older ones
                 continue
