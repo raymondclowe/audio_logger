@@ -17,7 +17,7 @@ import wave
 
 # Configuration
 AUDIO_DEVICE = "plughw:3,0"
-RECORD_DURATION = 30  # seconds
+RECORD_DURATION = 60  # seconds
 OVERLAP_DURATION = 2  # seconds - overlap between chunks to avoid word breaks
 TRANSCRIBE_URL = "http://192.168.0.142:8085/transcribe"
 TRANSCRIBE_MODEL = "small"
@@ -197,7 +197,7 @@ def clean_audio(input_path: Path, output_path: Path) -> bool:
             "sox", str(input_path), str(output_path),
             "noisered", str(noise_prof), "0.21",
             "highpass", "300",           # Higher to remove more room rumble/echo
-            "lowpass", "3000",            # Tighter for speech intelligibility band
+            "lowpass", "3400",            # Slightly brighter, still within speech band
             "compand", "0.03,0.15", "6:-70,-65,-40", "-5", "-90", "0.05",  # Faster attack/release, more aggressive
             "equalizer", "800", "400", "4",   # Boost lower speech frequencies more
             "equalizer", "2500", "800", "3",  # Boost upper speech frequencies
