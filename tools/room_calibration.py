@@ -180,17 +180,24 @@ def record_audio(device: str, output_path: Path, duration: int = 10) -> bool:
 
 
 def generate_test_audio(text: str, output_path: Path) -> bool:
-    """Generate speech audio using espeak (if available)."""
-    try:
-        # Check if espeak is available
-        run_command(["which", "espeak"])
-    except subprocess.CalledProcessError:
-        print("espeak not found. Install with: sudo apt-get install espeak")
+    """Generate speech audio using espeak or espeak-ng (if available)."""
+    # Try espeak-ng first (more widely available), then espeak
+    tts_cmd = None
+    for cmd_name in ["espeak-ng", "espeak"]:
+        try:
+            run_command(["which", cmd_name])
+            tts_cmd = cmd_name
+            break
+        except subprocess.CalledProcessError:
+            continue
+    
+    if tts_cmd is None:
+        print("No TTS engine found. Install with: sudo apt-get install espeak-ng")
         return False
 
-    print("Generating test audio with espeak...")
+    print(f"Generating test audio with {tts_cmd}...")
     cmd = [
-        "espeak",
+        tts_cmd,
         "-w", str(output_path),
         "-s", "150",  # Speed
         "-p", "50",   # Pitch
