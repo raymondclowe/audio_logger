@@ -91,18 +91,19 @@ PARAMETER_SPACE = {
 
 # Parameter ranges for Bayesian optimization (continuous values)
 # Each parameter has a (min, max, step) tuple for sampling
+# Note: Step boundaries are chosen so BASELINE_PARAMS values align with them
 PARAMETER_RANGES = {
-    "noisered": (0.10, 0.35, 0.01),
-    "highpass": (50, 500, 10),
-    "lowpass": (2500, 4500, 100),
-    "compand_attack": (0.01, 0.15, 0.01),
-    "compand_decay": (0.10, 0.40, 0.01),
-    "eq1_freq": (600, 1500, 50),
-    "eq1_width": (300, 800, 50),
-    "eq1_gain": (0, 6, 1),
-    "eq2_freq": (2000, 4000, 100),
-    "eq2_width": (600, 1500, 100),
-    "eq2_gain": (0, 5, 1),
+    "noisered": (0.10, 0.35, 0.01),     # baseline 0.21 aligns
+    "highpass": (50, 500, 50),          # baseline 300 aligns
+    "lowpass": (2500, 4500, 100),       # baseline 3400 aligns
+    "compand_attack": (0.01, 0.15, 0.01),  # baseline 0.03 aligns
+    "compand_decay": (0.10, 0.40, 0.05),   # baseline 0.15 aligns
+    "eq1_freq": (600, 1400, 100),       # baseline 800 aligns
+    "eq1_width": (300, 700, 100),       # baseline 400 aligns
+    "eq1_gain": (1, 6, 1),              # baseline 4 aligns
+    "eq2_freq": (2000, 4000, 100),      # baseline 2500 aligns
+    "eq2_width": (600, 1200, 100),      # baseline 800 aligns
+    "eq2_gain": (1, 5, 1),              # baseline 3 aligns
 }
 
 # Quick mode uses a reduced parameter space
@@ -581,17 +582,19 @@ def run_calibration(
     param_space: Dict[str, List[str]],
     max_combinations: int,
     workdir: Path,
+    noise_profile: Optional[Path] = None,
     metric: str = "wer",
     verbose: bool = False
 ) -> List[CalibrationResult]:
     """Run calibration by testing different parameter combinations."""
     results = []
 
-    # Build noise profile
-    noise_profile = workdir / "noise.prof"
-    if not build_noise_profile(input_audio, noise_profile):
-        print("Failed to build noise profile")
-        return results
+    # Build noise profile if not provided
+    if noise_profile is None:
+        noise_profile = workdir / "noise.prof"
+        if not build_noise_profile(input_audio, noise_profile):
+            print("Failed to build noise profile")
+            return results
 
     # Generate parameter combinations
     combinations = generate_parameter_combinations(param_space, max_combinations)
@@ -819,6 +822,7 @@ def main():
                 param_space=param_space,
                 max_combinations=args.max_combinations,
                 workdir=workdir,
+                noise_profile=noise_profile,
                 metric=args.metric,
                 verbose=args.verbose
             )

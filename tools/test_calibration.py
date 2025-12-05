@@ -7,7 +7,7 @@ without requiring actual audio hardware or a transcription server. It uses
 mock/simulated data to test the calibration algorithms.
 
 Usage:
-    # Run all tests
+    # Run all tests (from repository root)
     python tools/test_calibration.py
 
     # Run specific test
@@ -15,6 +15,9 @@ Usage:
 
     # Verbose output
     python tools/test_calibration.py -v
+
+Note: This script must be run from the repository root or with the tools
+directory in PYTHONPATH.
 """
 
 import argparse
@@ -24,9 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from unittest.mock import MagicMock, patch
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
-
+# Import from the same directory (room_calibration.py is in tools/)
 from room_calibration import (
     BASELINE_PARAMS,
     PARAMETER_RANGES,
@@ -135,11 +136,17 @@ def test_parameter_combinations() -> Tuple[bool, str]:
             return False, f"Combination missing keys: {required_keys - set(combo.keys())}"
     
     # Baseline should be included when sampling
-    baseline_tuple = tuple(BASELINE_PARAMS[k] for k in param_space.keys())
-    has_baseline = any(
-        tuple(c[k] for k in param_space.keys()) == baseline_tuple
-        for c in combos_limited
-    )
+    # Build baseline tuple once for efficiency
+    param_keys = list(param_space.keys())
+    baseline_tuple = tuple(BASELINE_PARAMS[k] for k in param_keys)
+    
+    has_baseline = False
+    for combo in combos_limited:
+        combo_tuple = tuple(combo[k] for k in param_keys)
+        if combo_tuple == baseline_tuple:
+            has_baseline = True
+            break
+    
     if not has_baseline:
         return False, "Baseline configuration not included in sampled combinations"
     
