@@ -1,3 +1,8 @@
+import http.server
+import socketserver
+# Health check globals
+LAST_LOG_TIME = None
+LAST_ERROR = None
 #!/usr/bin/env python3
 """
 Continuous audio logger with transcription.
@@ -37,14 +42,15 @@ SAMPLE_RATE = 44100
 CHANNELS = 2
 # Adaptive thresholds - will be learned from silent periods
 SILENCE_BASELINE_SAMPLES = 10  # Collect this many silent recordings before stabilizing
-BASELINE_MARGIN = 1.5  # 50% margin above silence baseline for "definitely quiet"
-SPEECH_MULTIPLIER = 3.5  # Speech must be this many times above silence baseline (raised from 2.5)
-SPEECH_VARIANCE_THRESHOLD = 0.4  # Coefficient of variation for speech pattern detection (raised from 0.3)
+BASELINE_MARGIN = 1.3  # 30% margin above silence baseline for "definitely quiet" (lowered for testing)
+SPEECH_MULTIPLIER = 2.0  # Speech must be this many times above silence baseline (lowered for testing)
+SPEECH_VARIANCE_THRESHOLD = 0.25  # Coefficient of variation for speech pattern detection (lowered for testing)
 ENVIRONMENT_UPDATE_THRESHOLD = 0.5  # If no speech found this many times, re-baseline
 ABSOLUTE_SPEECH_MINIMUM = 80  # Conservative absolute minimum for speech (lowered for portability)
 # Spike filtering - reject audio with isolated loud peaks (clicks, pops)
-PEAK_TO_MEAN_MAX_RATIO = 5.0  # If peak/mean > 5, likely a transient spike, not speech
-PEAK_TO_P90_MAX_RATIO = 4.0   # If peak/P90 > 4, likely a transient spike
+# Relaxed to reduce false negatives on real speech with brief transients
+PEAK_TO_MEAN_MAX_RATIO = 15.0  # If peak/mean >15 AND peak/P90 > threshold, treat as spike
+PEAK_TO_P90_MAX_RATIO = 10.0   # If peak/P90 >10 AND peak/mean > threshold, treat as spike
 # Windowed RMS config: speech is intermittent; use P90 of window RMS for decisions (more stable than peak)
 RMS_WINDOW_SECS = 0.05  # 50ms window
 RMS_PERCENTILE = 90     # percentile of window RMS (use for decisions, more stable than peak)
@@ -291,6 +297,14 @@ def get_daily_log_path():
     return LOG_DIR / f"audio_log_{date_str}.txt"
 
 
+def ensure_daily_log_file():
+    """Ensure today's log file exists so we roll over correctly at midnight."""
+    log_path = get_daily_log_path()
+    if not log_path.exists():
+        log_path.touch()
+        set_file_permissions(log_path)
+
+
 def create_overlapped_audio(current_path: Path, output_path: Path) -> bool:
     """Create audio with overlap from previous recording."""
     global PREVIOUS_AUDIO
@@ -416,15 +430,18 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
         speech_minimum = max(BASELINE.get_speech_minimum(), ABSOLUTE_SPEECH_MINIMUM)
         
         # ===== VOTE 1: Energy-based detection =====
-        # Speech should have P90 RMS well above baseline
-        vote_energy = perc_rms >= speech_minimum and perc_rms >= definitely_quiet
+        # Speech should have P90 RMS or peak well above baseline
+        vote_energy = (
+            (perc_rms >= speech_minimum and perc_rms >= definitely_quiet) or
+            (peak_rms >= speech_minimum * 1.2)
+        )
         
         # ===== VOTE 2: Spike filter (vote AGAINST speech if transient) =====
-        # Reject if peak/mean ratio is extremely high (isolated click/pop)
+        # Reject only if BOTH ratios are extremely high (isolated click/pop)
         peak_to_mean_ratio = peak_rms / mean_rms if mean_rms > 0 else 1.0
         peak_to_p90_ratio = peak_rms / perc_rms if perc_rms > 0 else 1.0
-        # If spike is extreme, vote NO (return True to filter it out)
-        vote_spike_filter = not (peak_to_mean_ratio > PEAK_TO_MEAN_MAX_RATIO or peak_to_p90_ratio > PEAK_TO_P90_MAX_RATIO)
+        # More lenient: require both ratios to exceed limits to call it a spike
+        vote_spike_filter = not (peak_to_mean_ratio > PEAK_TO_MEAN_MAX_RATIO and peak_to_p90_ratio > PEAK_TO_P90_MAX_RATIO)
         
         # ===== VOTE 3: Acoustic pattern (variance/CV) =====
         # Speech has natural variation in amplitude (peaks and valleys)
@@ -483,10 +500,6 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
             is_silent = True
             is_speech = False
             BASELINE.add_silent_sample(perc_rms)
-        elif perc_rms < speech_minimum:
-            reason = "below_speech_minimum"
-            is_silent = True
-            is_speech = False
         elif not vote_spike_filter:
             reason = f"transient_spike (peak_ratio={peak_to_mean_ratio:.1f}x)"
             is_silent = True
@@ -520,6 +533,16 @@ def is_audio_silent(wav_path: Path) -> tuple[bool, dict]:
             },
             "learning": BASELINE.is_learning
         }
+        if DEBUG:
+            print(f"[is_audio_silent] mean={mean_rms:.1f} peak={peak_rms:.1f} perc={perc_rms:.1f} var={cv:.3f}")
+            print(f"  Baselines: silence<{silence_baseline:.1f} quiet<{definitely_quiet:.1f} speech>{speech_minimum:.1f}")
+            print(f"  Votes: energy={votes['energy']} spike_filter={votes['spike_filter']} pattern={votes['pattern']} spectral={votes['spectral']}")
+            print(f"  Decision: {reason} (is_speech={is_speech})")
+        # .force_transcribe override
+        if Path('.force_transcribe').exists():
+            if DEBUG:
+                print("[FORCE TRANSCRIBE OVERRIDE] Forcing is_silent=False for this segment.")
+            return False, stats
         return is_silent, stats
     except Exception as e:
         if DEBUG:
@@ -633,10 +656,11 @@ def transcribe_audio(audio_path: Path) -> str:
     """Transcribe audio file using the transcription service with context."""
     global LAST_TRANSCRIPT
     try:
+        if DEBUG:
+            print(f"[transcribe_audio] Attempting transcription for {audio_path}")
         with open(audio_path, 'rb') as f:
             files = {'file': f}
             params = {'model': TRANSCRIBE_MODEL}
-            
             # Add context from previous transcription if available
             if LAST_TRANSCRIPT:
                 words = LAST_TRANSCRIPT.split()
@@ -645,33 +669,31 @@ def transcribe_audio(audio_path: Path) -> str:
                 else:
                     context = LAST_TRANSCRIPT
                 params['prompt'] = f"Continuing conversation: ...{context}"
-            
             response = requests.post(TRANSCRIBE_URL, files=files, params=params, timeout=30)
             response.raise_for_status()
-            
             result = response.json()
             transcript = result.get('text', '').strip()
-            
+            if DEBUG:
+                print(f"[transcribe_audio] Transcript: '{transcript}'")
             # Update context for next transcription
             if transcript:
                 LAST_TRANSCRIPT = transcript
-            
             return transcript
-            
     except Exception as e:
         if DEBUG:
-            print(f"Transcription failed: {e}")
+            print(f"[transcribe_audio] Transcription failed: {e}")
         return ""
 
 
 def log_transcript(text: str, stats: dict = None, filename: str = None):
     """Append transcript with timestamp and audio stats to daily log file."""
+    global LAST_LOG_TIME, LAST_ERROR
     if not text:
+        if DEBUG:
+            print("[log_transcript] No text to log.")
         return
-    
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_path = get_daily_log_path()
-    
     try:
         with open(log_path, 'a', encoding='utf-8') as f:
             # Write audio stats for debugging
@@ -682,11 +704,13 @@ def log_transcript(text: str, stats: dict = None, filename: str = None):
                 f.write(f"\n")
             f.write(f"[{timestamp}] {text}\n")
         set_file_permissions(log_path)
+        LAST_LOG_TIME = timestamp
         if DEBUG:
-            print(f"[{timestamp}] Logged: {text}")
+            print(f"[log_transcript] Logged: {text}")
     except Exception as e:
+        LAST_ERROR = str(e)
         if DEBUG:
-            print(f"Failed to write log: {e}")
+            print(f"[log_transcript] Failed to write log: {e}")
 
 
 def cleanup_temp_files(max_age_hours: int = 12, keep_last_n_wavs: int = 5):
@@ -779,59 +803,84 @@ def process_audio_worker(task_queue):
             task_queue.task_done()
             
         except Exception as e:
+            global LAST_ERROR
+            LAST_ERROR = str(e)
             if DEBUG:
                 print(f"Error in processing worker: {e}")
             task_queue.task_done()
 
 
 def main():
+    # Start health check HTTP server in background
+    def health_check_server():
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                global LAST_LOG_TIME, LAST_ERROR
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                import json
+                resp = {
+                    'status': 'running',
+                    'last_log_time': LAST_LOG_TIME,
+                    'last_error': LAST_ERROR
+                }
+                self.wfile.write(json.dumps(resp).encode())
+            def log_message(self, format, *args):
+                return  # Suppress default logging
+        with socketserver.TCPServer(("0.0.0.0", 8089), Handler) as httpd:
+            httpd.serve_forever()
+    threading.Thread(target=health_check_server, daemon=True).start()
+
     """Main loop: continuous recording with background processing."""
     global PREVIOUS_AUDIO
     if DEBUG:
         print("Starting audio logger service...")
     setup_directories()
-    
+
     # Auto-detect audio device if not configured
     if AUDIO_DEVICE is None:
         auto_detect_audio_device()
     else:
         print(f"Using configured audio device: {AUDIO_DEVICE}")
-    
+
     # Start background processing thread
     processing_queue = queue.Queue(maxsize=5)  # Limit queue to prevent memory buildup
     worker_thread = threading.Thread(target=process_audio_worker, args=(processing_queue,), daemon=True)
     worker_thread.start()
-    
+
     while True:
         try:
+            # Ensure a fresh daily log file exists, even if we're silent
+            ensure_daily_log_file()
             # Pause logging if VLC is actively playing
             if is_vlc_playing():
                 if DEBUG:
                     print("VLC activity detected; pausing recording for this cycle.")
                 time.sleep(5)
                 continue
-            
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             raw_audio = TEMP_DIR / f"raw_{timestamp}.wav"
             overlapped_audio = TEMP_DIR / f"overlapped_{timestamp}.wav"
             clean_audio_path = TEMP_DIR / f"clean_{timestamp}.wav"
-            
+
             if DEBUG:
                 print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Recording for {RECORD_DURATION} seconds...")
-            
+
             # Record audio (BLOCKS for 60 seconds - this is unavoidable)
             if not record_audio(raw_audio, RECORD_DURATION):
                 if DEBUG:
                     print("Recording failed, retrying...")
                 time.sleep(5)
                 continue
-            
+
             # Create overlapped version with previous recording (fast, <1s)
             create_overlapped_audio(raw_audio, overlapped_audio)
-            
+
             # Update previous audio reference for next iteration
             PREVIOUS_AUDIO = raw_audio
-            
+
             # Submit to background worker for processing
             # This is non-blocking! Recording will continue immediately
             try:
@@ -841,7 +890,7 @@ def main():
             except queue.Full:
                 if DEBUG:
                     print(f"[{timestamp}] Processing queue full, skipping this segment")
-            
+
         except KeyboardInterrupt:
             if DEBUG:
                 print("\nStopping audio logger...")
