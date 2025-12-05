@@ -80,7 +80,7 @@ if HAS_CONFIG:
     DEFAULT_URL = config_manager.get_transcription_url()
     DEFAULT_MODEL = config_manager.get_transcription_model()
 else:
-    DEFAULT_URL = "http://192.168.0.142:8085/transcribe"
+    DEFAULT_URL = "http://localhost:8085/transcribe"
     DEFAULT_MODEL = "small"
 
 DEFAULT_DEVICE = "plughw:0,0"
