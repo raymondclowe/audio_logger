@@ -169,6 +169,55 @@ groups
 - Network access to Whisper transcription service
 - Sufficient disk space for audio files and logs
 
+## Room Calibration
+
+The audio logger includes a room calibration tool to find optimal sox audio processing parameters for your specific environment. Different rooms have different acoustic properties (reverb, ambient noise, etc.) that affect transcription accuracy.
+
+### Running Room Calibration
+
+```bash
+# Record a speech sample and calibrate (recommended)
+python tools/room_calibration.py --record --device plughw:0,0
+
+# Use an existing audio file with known transcript
+python tools/room_calibration.py --input sample.wav --reference "expected transcript text"
+
+# Generate test audio (requires espeak) and calibrate
+python tools/room_calibration.py --generate --device plughw:0,0
+
+# Quick calibration with fewer parameter combinations
+python tools/room_calibration.py --record --quick
+```
+
+### What It Does
+
+1. Records or generates test audio
+2. Tests multiple sox parameter combinations (noise reduction, filters, EQ)
+3. Transcribes each variant using the Whisper API
+4. Compares transcripts to find the most accurate settings
+5. Outputs recommended sox parameters for your room
+
+### Applying Calibration Results
+
+After running calibration, update the `clean_audio()` function in `main.py` with the recommended parameters, or use the generated sox command.
+
+## Tools
+
+Additional tools are available in the `tools/` directory:
+
+- `room_calibration.py` - Find optimal sox settings for your room
+- `ab_compare.py` - Interactive A/B testing for sox cleaning chains
+- `ab_test_sox.py` - Batch A/B testing with transcription comparison
+
+## TODO
+
+- [ ] **Room Calibration Enhancements**:
+  - [ ] Auto-generate standardized test audio for calibration
+  - [ ] Record real speech samples for more realistic calibration
+  - [ ] Expand parameter search space for more fine-tuned results
+  - [ ] Add support for saving/loading room profiles
+  - [ ] Integrate calibration results directly into main.py configuration
+
 ## Security Notes
 
 - All data files (audio recordings, transcripts, noise profiles) are restricted to `rw-r-----` (640) permissions
