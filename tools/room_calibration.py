@@ -10,6 +10,8 @@ Features:
 - Can record a speech sample or use an existing audio file
 - Can generate test audio using text-to-speech (if available)
 - Explores a configurable space of sox parameters (noise reduction, filters, etc.)
+- Uses Word Error Rate (WER) or Character Error Rate (CER) for accurate scoring
+- Supports Bayesian optimization (optuna) for efficient parameter search
 - Transcribes each variant and compares to find the most accurate settings
 - Outputs recommended sox settings for main.py
 
@@ -25,6 +27,12 @@ Usage:
 
     # Quick calibration with fewer parameter combinations
     python tools/room_calibration.py --record --quick
+
+    # Use Bayesian optimization (recommended for finding optimal settings)
+    python tools/room_calibration.py --input sample.wav --reference "expected text" --strategy bayesian
+
+    # Use Character Error Rate instead of Word Error Rate
+    python tools/room_calibration.py --input sample.wav --reference "expected text" --metric cer
 """
 
 import argparse
@@ -44,6 +52,20 @@ import random
 import requests
 import wave
 
+try:
+    import jiwer
+    HAS_JIWER = True
+except ImportError:
+    HAS_JIWER = False
+
+try:
+    import optuna
+    HAS_OPTUNA = True
+    # Suppress optuna logging by default
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+except ImportError:
+    HAS_OPTUNA = False
+
 DEFAULT_URL = "http://192.168.0.142:8085/transcribe"
 DEFAULT_DEVICE = "plughw:0,0"
 DEFAULT_MODEL = "base"
@@ -51,7 +73,7 @@ DEFAULT_MODEL = "base"
 # Random seed for reproducible parameter sampling
 RANDOM_SEED = 42
 
-# Parameter space for calibration
+# Parameter space for calibration (discrete values for random sampling)
 # Each parameter has a name and list of values to try
 PARAMETER_SPACE = {
     "noisered": ["0.15", "0.18", "0.21", "0.25", "0.30"],
@@ -65,6 +87,22 @@ PARAMETER_SPACE = {
     "eq2_freq": ["2500", "3000", "3500"],
     "eq2_width": ["800", "1000", "1200"],
     "eq2_gain": ["2", "3"],
+}
+
+# Parameter ranges for Bayesian optimization (continuous values)
+# Each parameter has a (min, max, step) tuple for sampling
+PARAMETER_RANGES = {
+    "noisered": (0.10, 0.35, 0.01),
+    "highpass": (50, 500, 10),
+    "lowpass": (2500, 4500, 100),
+    "compand_attack": (0.01, 0.15, 0.01),
+    "compand_decay": (0.10, 0.40, 0.01),
+    "eq1_freq": (600, 1500, 50),
+    "eq1_width": (300, 800, 50),
+    "eq1_gain": (0, 6, 1),
+    "eq2_freq": (2000, 4000, 100),
+    "eq2_width": (600, 1500, 100),
+    "eq2_gain": (0, 5, 1),
 }
 
 # Quick mode uses a reduced parameter space
@@ -284,15 +322,53 @@ def transcribe(url: str, model: str, wav_path: Path) -> str:
             return f"ERROR: {e}"
 
 
-def calculate_word_accuracy(reference: str, transcript: str) -> float:
+def calculate_word_accuracy(reference: str, transcript: str, metric: str = "wer") -> float:
     """
-    Calculate word-level accuracy between reference and transcript.
-    Uses a simple word overlap metric.
+    Calculate accuracy between reference and transcript using WER or CER.
+    
+    Args:
+        reference: The expected/reference text
+        transcript: The transcribed text to evaluate
+        metric: Either "wer" (Word Error Rate) or "cer" (Character Error Rate)
+    
+    Returns:
+        Accuracy score between 0.0 and 1.0 (higher is better)
+        
+    Note: Uses jiwer library for accurate WER/CER calculation that accounts for
+    word order, insertions, deletions, and substitutions.
     """
     if not reference or not transcript:
         return 0.0
 
-    # Normalize texts
+    if HAS_JIWER:
+        # Use jiwer for accurate WER/CER calculation
+        # WER/CER accounts for word order, insertions, deletions, substitutions
+        try:
+            # Apply standard text normalization for fair comparison
+            # This handles case, punctuation, and whitespace normalization
+            transforms = jiwer.Compose([
+                jiwer.ToLowerCase(),
+                jiwer.RemovePunctuation(),
+                jiwer.RemoveMultipleSpaces(),
+                jiwer.Strip(),
+            ])
+            
+            ref_normalized = transforms(reference)
+            trans_normalized = transforms(transcript)
+            
+            if metric == "cer":
+                error_rate = jiwer.cer(ref_normalized, trans_normalized)
+            else:
+                error_rate = jiwer.wer(ref_normalized, trans_normalized)
+            # Convert error rate to accuracy (clamp to 0-1 range)
+            accuracy = max(0.0, 1.0 - error_rate)
+            return accuracy
+        except Exception:
+            # Fall back to simple metric on jiwer errors
+            pass
+
+    # Fallback: Simple word overlap metric (set-based F1)
+    # This ignores word order but works without jiwer
     ref_words = set(reference.lower().split())
     trans_words = set(transcript.lower().split())
 
@@ -360,6 +436,123 @@ def generate_parameter_combinations(param_space: Dict[str, List[str]], max_combi
     return [dict(zip(keys, combo)) for combo in combinations]
 
 
+def run_bayesian_optimization(
+    input_audio: Path,
+    reference_text: str,
+    url: str,
+    model: str,
+    noise_profile: Path,
+    workdir: Path,
+    n_trials: int = 50,
+    metric: str = "wer",
+    verbose: bool = False
+) -> List[CalibrationResult]:
+    """
+    Run Bayesian optimization to find optimal sox parameters.
+    
+    Uses optuna to efficiently explore the parameter space by learning from
+    previous evaluations and focusing on promising regions.
+    
+    Args:
+        input_audio: Path to input audio file
+        reference_text: Reference transcript for accuracy comparison
+        url: Transcription service URL
+        model: Whisper model to use
+        noise_profile: Path to noise profile
+        workdir: Working directory for temporary files
+        n_trials: Number of optimization trials
+        metric: Accuracy metric to use ("wer" or "cer")
+        verbose: Show detailed progress
+    
+    Returns:
+        List of CalibrationResult objects sorted by accuracy (best first)
+    """
+    if not HAS_OPTUNA:
+        print("Warning: optuna not installed. Install with: pip install optuna")
+        print("Falling back to random sampling strategy.")
+        return []
+    
+    results: List[CalibrationResult] = []
+    trial_counter = [0]  # Use list for mutable closure
+    
+    def objective(trial: optuna.Trial) -> float:
+        """Objective function for optuna optimization."""
+        trial_counter[0] += 1
+        
+        # Sample parameters from continuous ranges
+        params = {}
+        for param_name, (min_val, max_val, step) in PARAMETER_RANGES.items():
+            if param_name in ["noisered", "compand_attack", "compand_decay"]:
+                # Float parameters - sample with 2 decimal precision
+                value = trial.suggest_float(param_name, min_val, max_val, step=step)
+                params[param_name] = f"{value:.2f}"
+            else:
+                # Integer parameters
+                value = trial.suggest_int(param_name, int(min_val), int(max_val), step=int(step))
+                params[param_name] = str(value)
+        
+        # Apply sox processing
+        output_wav = workdir / f"trial_{trial_counter[0]:04d}.wav"
+        success, sox_cmd = apply_sox_processing(input_audio, output_wav, noise_profile, params)
+        
+        if not success:
+            if verbose:
+                print(f"  [{trial_counter[0]}/{n_trials}] FAILED: sox processing error")
+            return 0.0  # Return worst score for failed processing
+        
+        # Transcribe
+        transcript = transcribe(url, model, output_wav)
+        
+        # Calculate score using WER/CER
+        score = calculate_word_accuracy(reference_text, transcript, metric=metric)
+        
+        # Store result
+        result = CalibrationResult(
+            params=params,
+            transcript=transcript,
+            accuracy_score=score,
+            wav_path=str(output_wav),
+            sox_command=sox_cmd
+        )
+        results.append(result)
+        
+        if verbose:
+            print(f"  [{trial_counter[0]}/{n_trials}] Score: {score:.3f} | Transcript: {transcript[:50]}...")
+        elif trial_counter[0] % 10 == 0 or trial_counter[0] == n_trials:
+            print(f"  Progress: {trial_counter[0]}/{n_trials} ({100*trial_counter[0]//n_trials}%)")
+        
+        return score  # optuna maximizes by default when direction="maximize"
+    
+    print(f"\nRunning Bayesian optimization with {n_trials} trials...")
+    print(f"Using {metric.upper()} metric for accuracy scoring")
+    
+    # Create study with TPE sampler (good for hyperparameter optimization)
+    sampler = optuna.samplers.TPESampler(seed=RANDOM_SEED)
+    study = optuna.create_study(
+        direction="maximize",  # We want to maximize accuracy
+        sampler=sampler,
+        study_name="room_calibration"
+    )
+    
+    # Add baseline as first trial
+    baseline_values = {}
+    for param_name, value in BASELINE_PARAMS.items():
+        if param_name in ["noisered", "compand_attack", "compand_decay"]:
+            baseline_values[param_name] = float(value)
+        else:
+            baseline_values[param_name] = int(value)
+    
+    study.enqueue_trial(baseline_values)
+    
+    # Run optimization
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    
+    print(f"\nBest trial: {study.best_trial.number}")
+    print(f"Best score: {study.best_value:.3f}")
+    
+    return results
+
+
 def format_sox_settings(params: Dict[str, str]) -> str:
     """Format parameters as a Python dict string for main.py."""
     lines = [
@@ -388,6 +581,7 @@ def run_calibration(
     param_space: Dict[str, List[str]],
     max_combinations: int,
     workdir: Path,
+    metric: str = "wer",
     verbose: bool = False
 ) -> List[CalibrationResult]:
     """Run calibration by testing different parameter combinations."""
@@ -404,6 +598,8 @@ def run_calibration(
     total = len(combinations)
 
     print(f"\nTesting {total} parameter combinations...")
+    if reference_text:
+        print(f"Using {metric.upper()} metric for accuracy scoring")
 
     for i, params in enumerate(combinations, 1):
         output_wav = workdir / f"variant_{i:04d}.wav"
@@ -420,7 +616,7 @@ def run_calibration(
 
         # Calculate score
         if reference_text:
-            score = calculate_word_accuracy(reference_text, transcript)
+            score = calculate_word_accuracy(reference_text, transcript, metric=metric)
         else:
             score = calculate_transcript_quality(transcript)
 
@@ -497,6 +693,14 @@ def main():
     parser.add_argument(
         "--max-combinations", type=int, default=50,
         help="Maximum number of parameter combinations to test (default: 50)"
+    )
+    parser.add_argument(
+        "--strategy", choices=["random", "bayesian"], default="random",
+        help="Search strategy: 'random' for random sampling (default), 'bayesian' for Bayesian optimization (requires optuna)"
+    )
+    parser.add_argument(
+        "--metric", choices=["wer", "cer"], default="wer",
+        help="Accuracy metric: 'wer' for Word Error Rate (default), 'cer' for Character Error Rate"
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true",
@@ -577,16 +781,47 @@ def main():
         print("CALIBRATION")
         print("=" * 50)
 
-        results = run_calibration(
-            input_audio=input_audio,
-            reference_text=args.reference,
-            url=args.url,
-            model=args.model,
-            param_space=param_space,
-            max_combinations=args.max_combinations,
-            workdir=workdir,
-            verbose=args.verbose
-        )
+        # Build noise profile first (needed for both strategies)
+        noise_profile = workdir / "noise.prof"
+        if not build_noise_profile(input_audio, noise_profile):
+            print("Failed to build noise profile")
+            sys.exit(1)
+
+        # Choose search strategy
+        if args.strategy == "bayesian":
+            if not HAS_OPTUNA:
+                print("Warning: optuna not installed. Install with: pip install optuna")
+                print("Falling back to random sampling strategy.")
+                args.strategy = "random"
+            elif not args.reference:
+                print("Warning: Bayesian optimization requires --reference text.")
+                print("Falling back to random sampling strategy.")
+                args.strategy = "random"
+
+        if args.strategy == "bayesian":
+            results = run_bayesian_optimization(
+                input_audio=input_audio,
+                reference_text=args.reference,
+                url=args.url,
+                model=args.model,
+                noise_profile=noise_profile,
+                workdir=workdir,
+                n_trials=args.max_combinations,
+                metric=args.metric,
+                verbose=args.verbose
+            )
+        else:
+            results = run_calibration(
+                input_audio=input_audio,
+                reference_text=args.reference,
+                url=args.url,
+                model=args.model,
+                param_space=param_space,
+                max_combinations=args.max_combinations,
+                workdir=workdir,
+                metric=args.metric,
+                verbose=args.verbose
+            )
 
         if not results:
             print("No successful calibration results")
