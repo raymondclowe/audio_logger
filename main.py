@@ -23,15 +23,20 @@ import wave
 import threading
 import queue
 
-# Debug flag - check CLI argument and .debug file in working directory
-DEBUG = "--debug" in sys.argv or Path(".debug").exists()
+# Import configuration system
+from audio_logger_config import get_config_manager, load_config
 
-# Configuration
-AUDIO_DEVICE = None  # Will be auto-detected at startup
+# Load configuration
+config_manager = get_config_manager()
+config = config_manager.load_config()
+
+# Debug flag - check CLI argument, config file, and .debug file
+DEBUG = "--debug" in sys.argv or config_manager.is_debug_enabled() or Path(".debug").exists()
+
+# Configuration - loaded from config file with fallbacks
+AUDIO_DEVICE = config_manager.get_audio_device()  # Will be auto-detected if None
 RECORD_DURATION = 60  # seconds
 OVERLAP_DURATION = 2  # seconds - overlap between chunks to avoid word breaks
-TRANSCRIBE_URL = "http://192.168.0.142:8085/transcribe"
-TRANSCRIBE_MODEL = "small"
 LOG_DIR = Path(__file__).parent / "logs"
 TEMP_DIR = Path(__file__).parent / "temp"
 NOISE_PROFILE = Path(__file__).parent / "temp" / "ambient_noise.prof"
@@ -738,7 +743,7 @@ def transcribe_audio(audio_path: Path) -> str:
             print(f"[transcribe_audio] Attempting transcription for {audio_path}")
         with open(audio_path, 'rb') as f:
             files = {'file': f}
-            params = {'model': TRANSCRIBE_MODEL}
+            params = {'model': config_manager.get_transcription_model()}
             # Add context from previous transcription if available
             if LAST_TRANSCRIPT:
                 words = LAST_TRANSCRIPT.split()
@@ -747,7 +752,7 @@ def transcribe_audio(audio_path: Path) -> str:
                 else:
                     context = LAST_TRANSCRIPT
                 params['prompt'] = f"Continuing conversation: ...{context}"
-            response = requests.post(TRANSCRIBE_URL, files=files, params=params, timeout=30)
+            response = requests.post(config_manager.get_transcription_url(), files=files, params=params, timeout=30)
             response.raise_for_status()
             result = response.json()
             transcript = result.get('text', '').strip()

@@ -67,9 +67,14 @@ python3 -m venv .venv
 AUDIO_DEVICE = "plughw:0,0"  # Update card number as needed
 ```
 
-4. Update transcription server URL in `main.py`:
-```python
-TRANSCRIBE_URL = "http://your-server:8085/transcribe"
+4. Configure transcription service in `audio_logger.json`:
+```json
+{
+  "transcription": {
+    "url": "http://your-server:8085/transcribe",
+    "model": "small"
+  }
+}
 ```
 
 5. Test manually:
@@ -120,9 +125,11 @@ sudo systemctl restart audio_logger
 Edit `main.py` to change:
 - `AUDIO_DEVICE`: Audio input device (auto-detected by setup.sh)
 - `RECORD_DURATION`: Recording duration in seconds (default: 60)
-- `TRANSCRIBE_URL`: Transcription service URL (default: http://192.168.0.142:8085/transcribe)
-- `TRANSCRIBE_MODEL`: Whisper model to use (default: "small")
 - `SILENCE_THRESHOLD`: RMS peak threshold for silence detection (default: 200)
+
+Edit `audio_logger.json` to configure transcription service:
+- `transcription.url`: Transcription service URL (default: http://localhost:8085/transcribe)
+- `transcription.model`: Whisper model to use (default: "small")
 - `VLC_CPU_THRESHOLD`: Minimum CPU% to consider VLC "playing" (default: 5.0)
 
 ## Log Files
@@ -151,7 +158,7 @@ If audio is not being detected:
 
 1. Verify service is running: `curl http://your-server:8085/transcribe -X OPTIONS`
 2. Check network connectivity
-3. Update `TRANSCRIBE_URL` in `main.py`
+3. Update transcription URL in `audio_logger.json`
 
 ### Permission Denied
 

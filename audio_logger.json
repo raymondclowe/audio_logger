@@ -1,0 +1,8 @@
+{
+  "transcription": {
+    "url": "http://whisper-server.local:8085/transcribe",
+    "model": "small"
+  },
+  "audio_device": null,
+  "debug": false
+}

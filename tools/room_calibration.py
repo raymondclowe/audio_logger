@@ -52,6 +52,13 @@ import random
 import requests
 import wave
 
+# Import configuration system
+try:
+    from audio_logger_config import get_config_manager
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
+
 try:
     import jiwer
     HAS_JIWER = True
@@ -66,9 +73,17 @@ try:
 except ImportError:
     HAS_OPTUNA = False
 
-DEFAULT_URL = "http://192.168.0.142:8085/transcribe"
+# Get defaults from config if available
+if HAS_CONFIG:
+    config_manager = get_config_manager()
+    config = config_manager.load_config()
+    DEFAULT_URL = config_manager.get_transcription_url()
+    DEFAULT_MODEL = config_manager.get_transcription_model()
+else:
+    DEFAULT_URL = "http://192.168.0.142:8085/transcribe"
+    DEFAULT_MODEL = "small"
+
 DEFAULT_DEVICE = "plughw:0,0"
-DEFAULT_MODEL = "base"
 
 # Random seed for reproducible parameter sampling
 RANDOM_SEED = 42

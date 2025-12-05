@@ -45,10 +45,15 @@ sudo systemctl stop audio_logger
 
 ## Configuration
 
-Update transcription server in `/opt/audio_logger/main.py`:
+Update transcription server in `/opt/audio_logger/audio_logger.json`:
 
-```python
-TRANSCRIBE_URL = "http://your-whisper-server:8085/transcribe"
+```json
+{
+  "transcription": {
+    "url": "http://your-whisper-server:8085/transcribe",
+    "model": "small"
+  }
+}
 ```
 
 Then restart:

@@ -242,7 +242,29 @@ fi
 # 6. Test the transcription service
 echo ""
 echo "Step 6/8: Testing transcription service..."
-TRANSCRIBE_URL=$(grep "^TRANSCRIBE_URL = " "$MAIN_PY" | grep -oP '".*?"' | tr -d '"' || echo "")
+
+# Try to read from config file first
+CONFIG_FILE="audio_logger.json"
+if [ -f "$CONFIG_FILE" ]; then
+    TRANSCRIBE_URL=$(python3 -c "
+import json
+try:
+    with open('$CONFIG_FILE', 'r') as f:
+        config = json.load(f)
+    transcription = config.get('transcription', {})
+    url = transcription.get('url', '')
+    print(url)
+except:
+    print('')
+" 2>/dev/null || echo "")
+else
+    TRANSCRIBE_URL=""
+fi
+
+# Fallback to parsing main.py if config doesn't exist or doesn't have URL
+if [ -z "$TRANSCRIBE_URL" ]; then
+    TRANSCRIBE_URL=$(grep "^TRANSCRIBE_URL = " "$MAIN_PY" | grep -oP '".*?"' | tr -d '"' || echo "")
+fi
 
 if [ -n "$TRANSCRIBE_URL" ]; then
     echo "Testing connection to $TRANSCRIBE_URL..."
@@ -250,10 +272,10 @@ if [ -n "$TRANSCRIBE_URL" ]; then
         echo -e "${GREEN}✓ Transcription service is reachable${NC}"
     else
         echo -e "${YELLOW}⚠ Warning: Cannot reach transcription service at $TRANSCRIBE_URL${NC}"
-        echo "  You may need to update TRANSCRIBE_URL in main.py"
+        echo "  You may need to update the transcription URL in audio_logger.json"
     fi
 else
-    echo -e "${YELLOW}⚠ Could not find TRANSCRIBE_URL in main.py${NC}"
+    echo -e "${YELLOW}⚠ Could not find transcription URL in config file or main.py${NC}"
 fi
 
 # 7. Create user and group (if installing service)
@@ -334,7 +356,25 @@ echo ""
 echo "Configuration Summary:"
 echo "  Audio Device: $AUDIO_DEVICE (card $USB_DEVICE)"
 [ -n "$MIC_NUMID" ] && echo "  Mic Control: numid=$MIC_NUMID, max gain=$MAX_GAIN"
-echo "  Transcriber: ${TRANSCRIBE_URL:-Not configured}"
+
+# Get transcription URL for summary
+if [ -f "$CONFIG_FILE" ]; then
+    TRANSCRIBE_URL_SUMMARY=$(python3 -c "
+import json
+try:
+    with open('$CONFIG_FILE', 'r') as f:
+        config = json.load(f)
+    transcription = config.get('transcription', {})
+    url = transcription.get('url', '')
+    print(url)
+except:
+    print('')
+" 2>/dev/null || echo "")
+else
+    TRANSCRIBE_URL_SUMMARY=""
+fi
+
+echo "  Transcriber: ${TRANSCRIBE_URL_SUMMARY:-Not configured}"
 echo ""
 
 if [ "$INSTALL_SERVICE" = true ]; then

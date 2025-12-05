@@ -523,7 +523,9 @@ async function initialize() {
 # In desktop client
 import queue
 import threading
+from audio_logger_config import get_config_manager
 
+config_manager = get_config_manager()
 transcription_queue = queue.Queue()
 
 def transcription_worker():
@@ -534,11 +536,12 @@ def transcription_worker():
         
         max_retries = 5
         base_delay = 2
+        url = config_manager.get_transcription_url()
         
         for attempt in range(max_retries):
             try:
                 response = requests.post(
-                    TRANSCRIBE_URL,
+                    url,
                     files={'file': open(audio_path, 'rb')},
                     timeout=60
                 )
@@ -589,6 +592,10 @@ import asyncio
 import aiohttp
 
 async def send_audio(device_id):
+    from audio_logger_config import get_config_manager
+    config_manager = get_config_manager()
+    url = config_manager.get_transcription_url()
+    
     async with aiohttp.ClientSession() as session:
         for i in range(5):
             audio = open("test.wav", "rb")
@@ -596,7 +603,7 @@ async def send_audio(device_id):
             data.add_field('audio', audio)
             
             start = time.time()
-            async with session.post(TRANSCRIBE_URL, data=data) as resp:
+            async with session.post(url, data=data) as resp:
                 elapsed = time.time() - start
                 print(f"[{device_id}] {i}: {elapsed:.1f}s - {resp.status}")
             
