@@ -861,6 +861,38 @@ def log_transcript(text: str, stats: dict = None, filename: str = None):
             print(f"[log_transcript] Failed to write log: {e}")
 
 
+def log_event(event_type: str, message: str, filename: str = None, stats: dict = None):
+    """Log diagnostic events to help track missing minutes.
+    
+    Events are logged to the daily log file with a [EVENT] prefix.
+    This helps diagnose why audio segments might be skipped.
+    
+    Args:
+        event_type: Type of event (SILENT, QUEUE_FULL, VLC_PAUSE, RECORD_FAIL, ERROR)
+        message: Human-readable description of the event
+        filename: Optional filename associated with the event
+        stats: Optional audio stats dict
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_path = get_daily_log_path()
+    try:
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] [EVENT:{event_type}]")
+            if filename:
+                f.write(f" file={filename}")
+            if stats:
+                f.write(f" RMS(mean={stats.get('mean', 0):.1f}, peak={stats.get('peak', 0):.1f}, p90={stats.get('perc', 0):.1f})")
+                if 'reason' in stats:
+                    f.write(f" reason={stats['reason']}")
+            f.write(f" {message}\n")
+        set_file_permissions(log_path)
+        if DEBUG:
+            print(f"[log_event] {event_type}: {message}")
+    except Exception as e:
+        if DEBUG:
+            print(f"[log_event] Failed to write event log: {e}")
+
+
 def cleanup_temp_files(max_age_hours: int = 12, keep_last_n_wavs: int = 5):
     """Remove old temporary files, but keep the last N wavs for debugging."""
     try:
@@ -916,6 +948,9 @@ def process_audio_worker(task_queue):
                 print(f"  Thresholds: quiet<{baselines.get('quiet', 0):.0f} speech>{baselines.get('speech_min', 0):.0f} Reason: {stats['reason']}")
             
             if is_silent:
+                # Log silent segment to help diagnose missing minutes
+                log_event("SILENT", f"Audio detected as silent ({stats.get('reason', 'unknown')})", 
+                         raw_audio.name, stats)
                 update_noise_profile(overlapped_audio)
                 # Keep file for debugging; cleanup will prune older ones
                 task_queue.task_done()
@@ -925,6 +960,7 @@ def process_audio_worker(task_queue):
             if DEBUG:
                 print(f"[{timestamp}] Cleaning audio...")
             if not clean_audio(overlapped_audio, clean_audio_path):
+                log_event("CLEAN_FAIL", "Audio cleaning failed, skipping transcription", raw_audio.name)
                 if DEBUG:
                     print(f"[{timestamp}] Audio cleaning failed, skipping transcription.")
                 try:
@@ -942,8 +978,10 @@ def process_audio_worker(task_queue):
             # Log the result
             if transcript:
                 log_transcript(transcript, stats, raw_audio.name)
-            elif DEBUG:
-                print(f"[{timestamp}] No transcript generated.")
+            else:
+                log_event("NO_TRANSCRIPT", "Transcription returned empty result", raw_audio.name, stats)
+                if DEBUG:
+                    print(f"[{timestamp}] No transcript generated.")
             
             # Cleanup temporary files (keep last few wavs for debugging)
             cleanup_temp_files()
@@ -953,6 +991,7 @@ def process_audio_worker(task_queue):
         except Exception as e:
             global LAST_ERROR
             LAST_ERROR = str(e)
+            log_event("ERROR", f"Processing error: {e}")
             if DEBUG:
                 print(f"Error in processing worker: {e}")
             task_queue.task_done()
@@ -1003,6 +1042,7 @@ def main():
             ensure_daily_log_file()
             # Pause logging if VLC is actively playing
             if is_vlc_playing():
+                log_event("VLC_PAUSE", "VLC activity detected, pausing recording for this cycle")
                 if DEBUG:
                     print("VLC activity detected; pausing recording for this cycle.")
                 time.sleep(5)
@@ -1018,6 +1058,7 @@ def main():
 
             # Record audio (BLOCKS for 60 seconds - this is unavoidable)
             if not record_audio(raw_audio, RECORD_DURATION):
+                log_event("RECORD_FAIL", f"Recording failed for {raw_audio.name}, retrying...")
                 if DEBUG:
                     print("Recording failed, retrying...")
                 time.sleep(5)
@@ -1036,6 +1077,7 @@ def main():
                 if DEBUG:
                     print(f"[{timestamp}] Queued for processing (queue size: {processing_queue.qsize()})")
             except queue.Full:
+                log_event("QUEUE_FULL", f"Processing queue full, segment dropped", raw_audio.name)
                 if DEBUG:
                     print(f"[{timestamp}] Processing queue full, skipping this segment")
 
@@ -1046,6 +1088,7 @@ def main():
             worker_thread.join(timeout=5)
             break
         except Exception as e:
+            log_event("ERROR", f"Error in main loop: {e}")
             if DEBUG:
                 print(f"Error in main loop: {e}")
             time.sleep(5)
