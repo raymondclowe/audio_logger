@@ -1032,7 +1032,8 @@ def main():
         print(f"Using configured audio device: {AUDIO_DEVICE}")
 
     # Start background processing thread
-    processing_queue = queue.Queue(maxsize=5)  # Limit queue to prevent memory buildup
+    # Queue is unlimited - transcription can catch up during silent periods
+    processing_queue = queue.Queue()
     worker_thread = threading.Thread(target=process_audio_worker, args=(processing_queue,), daemon=True)
     worker_thread.start()
 
@@ -1072,14 +1073,14 @@ def main():
 
             # Submit to background worker for processing
             # This is non-blocking! Recording will continue immediately
-            try:
-                processing_queue.put((raw_audio, overlapped_audio, clean_audio_path, timestamp), block=False)
-                if DEBUG:
-                    print(f"[{timestamp}] Queued for processing (queue size: {processing_queue.qsize()})")
-            except queue.Full:
-                log_event("QUEUE_FULL", f"Processing queue full, segment dropped", raw_audio.name)
-                if DEBUG:
-                    print(f"[{timestamp}] Processing queue full, skipping this segment")
+            # Queue is unlimited so we never drop segments - transcription catches up during silent periods
+            processing_queue.put((raw_audio, overlapped_audio, clean_audio_path, timestamp))
+            queue_size = processing_queue.qsize()
+            if DEBUG:
+                print(f"[{timestamp}] Queued for processing (queue size: {queue_size})")
+            # Warn if queue is growing large (but don't drop segments)
+            if queue_size > 10:
+                log_event("QUEUE_BACKLOG", f"Processing queue has {queue_size} segments pending", raw_audio.name)
 
         except KeyboardInterrupt:
             if DEBUG:
