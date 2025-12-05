@@ -9,6 +9,7 @@ Continuous audio logger with transcription.
 Records 1-minute segments, cleans audio, transcribes, and logs to daily files.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -41,6 +42,22 @@ LOG_DIR = Path(__file__).parent / "logs"
 TEMP_DIR = Path(__file__).parent / "temp"
 NOISE_PROFILE = Path(__file__).parent / "temp" / "ambient_noise.prof"
 BASELINE_FILE = Path(__file__).parent / "temp" / "audio_baseline.json"
+CALIBRATION_CONFIG_FILE = Path(__file__).parent / "room_calibration_config.json"
+
+# Default SOX processing parameters (can be overridden by calibration config)
+DEFAULT_SOX_PARAMS = {
+    "noisered": "0.21",
+    "highpass": "300",
+    "lowpass": "3400",
+    "compand_attack": "0.03",
+    "compand_decay": "0.15",
+    "eq1_freq": "800",
+    "eq1_width": "400",
+    "eq1_gain": "4",
+    "eq2_freq": "2500",
+    "eq2_width": "800",
+    "eq2_gain": "3",
+}
 
 # Audio settings
 SAMPLE_RATE = 44100
@@ -169,6 +186,51 @@ def set_file_permissions(file_path: Path):
         file_path.chmod(0o640)
     except Exception:
         pass  # Continue if permission setting fails
+
+
+def load_calibration_config() -> dict:
+    """Load room calibration configuration if available.
+    
+    Reads the calibration config file if it exists and returns the SOX parameters.
+    Falls back to DEFAULT_SOX_PARAMS if no config file exists or on error.
+    
+    Returns:
+        dict: SOX parameters to use for audio processing
+    """
+    if not CALIBRATION_CONFIG_FILE.exists():
+        if DEBUG:
+            print("No calibration config found, using default SOX parameters")
+        return DEFAULT_SOX_PARAMS.copy()
+    
+    try:
+        with open(CALIBRATION_CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+        
+        # Extract the best_params from calibration results
+        if 'best_params' in config:
+            params = config['best_params']
+            # Validate that all required keys are present
+            required_keys = set(DEFAULT_SOX_PARAMS.keys())
+            if required_keys.issubset(set(params.keys())):
+                if DEBUG:
+                    print(f"✓ Loaded calibration config from {CALIBRATION_CONFIG_FILE.name}")
+                return params
+            else:
+                missing = required_keys - set(params.keys())
+                if DEBUG:
+                    print(f"⚠ Calibration config missing keys: {missing}, using defaults")
+        else:
+            if DEBUG:
+                print("⚠ Calibration config missing 'best_params', using defaults")
+    except Exception as e:
+        if DEBUG:
+            print(f"⚠ Could not load calibration config: {e}")
+    
+    return DEFAULT_SOX_PARAMS.copy()
+
+
+# Active SOX parameters - loaded from calibration config or defaults
+SOX_PARAMS = load_calibration_config()
 
 
 def detect_audio_devices():
@@ -657,7 +719,7 @@ def update_noise_profile(audio_path: Path) -> bool:
 
 
 def clean_audio(input_path: Path, output_path: Path) -> bool:
-    """Clean audio using sox: TEST 19 pipeline (noise reduction, filters, compand, EQ, norm, resample)."""
+    """Clean audio using sox pipeline with parameters from calibration config or defaults."""
     try:
         # Use adaptive noise profile if available, otherwise create from first 0.5s
         if NOISE_PROFILE.exists():
@@ -675,15 +737,16 @@ def clean_audio(input_path: Path, output_path: Path) -> bool:
             subprocess.run(cmd1, check=True, capture_output=True)
         set_file_permissions(noise_prof)
         
-        # Apply enhanced pipeline: noise reduction, tighter bandpass for speech, compand, dual EQ, normalize, resample to 16kHz mono
+        # Apply sox pipeline with calibrated or default parameters
         cmd2 = [
             "sox", str(input_path), str(output_path),
-            "noisered", str(noise_prof), "0.21",
-            "highpass", "300",           # Higher to remove more room rumble/echo
-            "lowpass", "3400",            # Slightly brighter, still within speech band
-            "compand", "0.03,0.15", "6:-70,-65,-40", "-5", "-90", "0.05",  # Faster attack/release, more aggressive
-            "equalizer", "800", "400", "4",   # Boost lower speech frequencies more
-            "equalizer", "2500", "800", "3",  # Boost upper speech frequencies
+            "noisered", str(noise_prof), SOX_PARAMS["noisered"],
+            "highpass", SOX_PARAMS["highpass"],
+            "lowpass", SOX_PARAMS["lowpass"],
+            "compand", f"{SOX_PARAMS['compand_attack']},{SOX_PARAMS['compand_decay']}", 
+            "6:-70,-65,-40", "-5", "-90", "0.05",
+            "equalizer", SOX_PARAMS["eq1_freq"], SOX_PARAMS["eq1_width"], SOX_PARAMS["eq1_gain"],
+            "equalizer", SOX_PARAMS["eq2_freq"], SOX_PARAMS["eq2_width"], SOX_PARAMS["eq2_gain"],
             "norm", "-3",
             "rate", "16k",
             "channels", "1"

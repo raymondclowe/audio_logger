@@ -85,6 +85,9 @@ else:
 
 DEFAULT_DEVICE = "plughw:0,0"
 
+# Calibration config file location (relative to main.py / repository root)
+CALIBRATION_CONFIG_FILE = Path(__file__).parent.parent / "room_calibration_config.json"
+
 # Random seed for reproducible parameter sampling
 RANDOM_SEED = 42
 
@@ -892,7 +895,7 @@ def main():
         print("\n\nSox command:")
         print(" ".join(best.sox_command))
 
-        # Save results
+        # Save results to workdir
         output_file = args.output or workdir / "calibration_results.json"
         results_data = {
             "best_params": best.params,
@@ -911,6 +914,16 @@ def main():
         with open(output_file, 'w') as f:
             json.dump(results_data, f, indent=2)
         print(f"\nResults saved to: {output_file}")
+
+        # Save calibration config file for main.py to use
+        try:
+            with open(CALIBRATION_CONFIG_FILE, 'w') as f:
+                json.dump(results_data, f, indent=2)
+            print(f"Calibration config saved to: {CALIBRATION_CONFIG_FILE}")
+            print("\n✓ main.py will automatically use these settings on next run.")
+        except Exception as e:
+            print(f"\n⚠ Warning: Could not save calibration config to {CALIBRATION_CONFIG_FILE}: {e}")
+            print("  You can manually copy the results from the output file.")
 
         # Cleanup
         if not args.keep_workdir and args.output:
