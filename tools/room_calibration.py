@@ -70,6 +70,9 @@ DEFAULT_URL = "http://192.168.0.142:8085/transcribe"
 DEFAULT_DEVICE = "plughw:0,0"
 DEFAULT_MODEL = "base"
 
+# Calibration config file location (relative to main.py / repository root)
+CALIBRATION_CONFIG_FILE = Path(__file__).parent.parent / "room_calibration_config.json"
+
 # Random seed for reproducible parameter sampling
 RANDOM_SEED = 42
 
@@ -877,7 +880,7 @@ def main():
         print("\n\nSox command:")
         print(" ".join(best.sox_command))
 
-        # Save results
+        # Save results to workdir
         output_file = args.output or workdir / "calibration_results.json"
         results_data = {
             "best_params": best.params,
@@ -896,6 +899,12 @@ def main():
         with open(output_file, 'w') as f:
             json.dump(results_data, f, indent=2)
         print(f"\nResults saved to: {output_file}")
+
+        # Save calibration config file for main.py to use
+        with open(CALIBRATION_CONFIG_FILE, 'w') as f:
+            json.dump(results_data, f, indent=2)
+        print(f"Calibration config saved to: {CALIBRATION_CONFIG_FILE}")
+        print("\n✓ main.py will automatically use these settings on next run.")
 
         # Cleanup
         if not args.keep_workdir and args.output:

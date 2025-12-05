@@ -195,11 +195,38 @@ python tools/room_calibration.py --record --quick
 2. Tests multiple sox parameter combinations (noise reduction, filters, EQ)
 3. Transcribes each variant using the Whisper API
 4. Compares transcripts to find the most accurate settings
-5. Outputs recommended sox parameters for your room
+5. Saves optimized settings to `room_calibration_config.json`
+6. The main script automatically loads these settings on next run
 
-### Applying Calibration Results
+### Automatic Configuration Integration
 
-After running calibration, update the `clean_audio()` function in `main.py` with the recommended parameters, or use the generated sox command.
+Calibration results are automatically saved to `room_calibration_config.json` in the repository root. The main script (`main.py`) automatically loads this file on startup and uses the calibrated parameters for audio processing.
+
+- **No manual editing required**: Just run calibration and restart the audio logger
+- **Multiple calibrations supported**: Run calibration whenever the room changes; the config file is updated automatically
+- **Fallback to defaults**: If no config file exists, the script uses sensible default parameters
+
+### Manual Override
+
+If you prefer to manually configure settings, you can create or edit `room_calibration_config.json`:
+
+```json
+{
+  "best_params": {
+    "noisered": "0.21",
+    "highpass": "300",
+    "lowpass": "3400",
+    "compand_attack": "0.03",
+    "compand_decay": "0.15",
+    "eq1_freq": "800",
+    "eq1_width": "400",
+    "eq1_gain": "4",
+    "eq2_freq": "2500",
+    "eq2_width": "800",
+    "eq2_gain": "3"
+  }
+}
+```
 
 ## Tools
 
@@ -216,7 +243,7 @@ Additional tools are available in the `tools/` directory:
   - [ ] Record real speech samples for more realistic calibration
   - [ ] Expand parameter search space for more fine-tuned results
   - [ ] Add support for saving/loading room profiles
-  - [ ] Integrate calibration results directly into main.py configuration
+  - [x] Integrate calibration results directly into main.py configuration
 
 ## Security Notes
 

@@ -235,6 +235,28 @@ def test_mock_calibration() -> Tuple[bool, str]:
     return True, "Mock calibration workflow tests passed"
 
 
+def test_calibration_config_file() -> Tuple[bool, str]:
+    """Test that calibration config file path is correctly defined."""
+    # Verify CALIBRATION_CONFIG_FILE is defined and is a Path
+    from room_calibration import CALIBRATION_CONFIG_FILE
+    
+    if not isinstance(CALIBRATION_CONFIG_FILE, Path):
+        return False, f"CALIBRATION_CONFIG_FILE should be a Path, got {type(CALIBRATION_CONFIG_FILE)}"
+    
+    # Verify the file points to the repository root (parent of tools/)
+    expected_parent = Path(__file__).parent.parent
+    actual_parent = CALIBRATION_CONFIG_FILE.parent
+    
+    if actual_parent != expected_parent:
+        return False, f"Config file should be in {expected_parent}, got {actual_parent}"
+    
+    # Verify the filename
+    if CALIBRATION_CONFIG_FILE.name != "room_calibration_config.json":
+        return False, f"Config file should be named 'room_calibration_config.json', got '{CALIBRATION_CONFIG_FILE.name}'"
+    
+    return True, "Calibration config file path tests passed"
+
+
 def run_all_tests(verbose: bool = False) -> bool:
     """Run all test functions and report results."""
     tests = [
@@ -246,6 +268,7 @@ def run_all_tests(verbose: bool = False) -> bool:
         ("Param Combos", test_parameter_combinations),
         ("Param Ranges", test_parameter_ranges),
         ("Mock Calibration", test_mock_calibration),
+        ("Config File Path", test_calibration_config_file),
     ]
     
     print("=" * 60)
@@ -295,7 +318,7 @@ def main():
         description="Test harness for room calibration tool"
     )
     parser.add_argument(
-        "--test", choices=["wer", "cer", "quality", "combos", "ranges", "bayesian", "mock", "all"],
+        "--test", choices=["wer", "cer", "quality", "combos", "ranges", "bayesian", "mock", "config", "all"],
         default="all",
         help="Specific test to run (default: all)"
     )
@@ -319,6 +342,7 @@ def main():
         "ranges": test_parameter_ranges,
         "bayesian": test_bayesian_optimization_available,
         "mock": test_mock_calibration,
+        "config": test_calibration_config_file,
     }
     
     test_func = test_map[args.test]
