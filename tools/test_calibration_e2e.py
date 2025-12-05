@@ -27,13 +27,19 @@ Requirements:
 """
 
 import argparse
-import json
+import random
+import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Test configuration constants
+MIN_RMS_VARIATION_DB = 0.5  # Minimum RMS difference to consider parameters as effective
+SCORE_TOLERANCE = 0.3  # Tolerance for expected scores in scoring tests
+MIN_SCORE_RANGE = 0.05  # Minimum score range for optimization to be meaningful
+MIN_ACCEPTABLE_SCORE = 0.5  # Minimum acceptable best score
 
 # Famous quotations for testing
 FAMOUS_QUOTES = [
@@ -101,8 +107,6 @@ def simulate_transcription(audio_path: Path, reference_text: str, noise_level: f
     varies from the reference. This simulates how different sox parameters
     might affect transcription quality.
     """
-    import random
-    
     if noise_level == 0.0:
         return reference_text
     
@@ -213,7 +217,7 @@ def test_parameter_variation(workdir: Path, audio_path: Path,
     
     # Check that we have variation in RMS levels
     rms_range = max(rms_values) - min(rms_values)
-    if rms_range < 0.5:  # Less than 0.5 dB difference
+    if rms_range < MIN_RMS_VARIATION_DB:
         return False, f"RMS variation too small ({rms_range:.2f} dB) - parameters may not be affecting output"
     
     return True, f"Parameter variation test passed: RMS range={rms_range:.2f}dB across {len(results)} variants"
@@ -235,7 +239,7 @@ def test_scoring_variation(reference_text: str, verbose: bool = False) -> Tuple[
     for transcript, expected_range, desc in test_cases:
         score = calculate_word_accuracy(reference_text, transcript)
         # Allow some tolerance for expected scores
-        in_range = abs(score - expected_range) < 0.3
+        in_range = abs(score - expected_range) < SCORE_TOLERANCE
         results.append((desc, score, expected_range, in_range))
         if verbose:
             status = "✓" if in_range else "✗"
@@ -248,7 +252,7 @@ def test_scoring_variation(reference_text: str, verbose: bool = False) -> Tuple[
     return True, f"Scoring variation test passed: {passed}/{len(results)} cases"
 
 
-def test_optimization_converges(workdir: Path, audio_path: Path, 
+def test_optimization_converges(workdir: Path, audio_path: Path,
                                  reference_text: str, verbose: bool = False) -> Tuple[bool, str]:
     """
     Test that the parameter search can find configurations with good scores.
@@ -295,11 +299,11 @@ def test_optimization_converges(workdir: Path, audio_path: Path,
     scores = [r["score"] for r in results]
     score_range = max(scores) - min(scores)
     
-    if score_range < 0.05:
+    if score_range < MIN_SCORE_RANGE:
         return False, f"Score range too small ({score_range:.3f}), optimization may not be effective"
     
     best_score = max(scores)
-    if best_score < 0.5:
+    if best_score < MIN_ACCEPTABLE_SCORE:
         return False, f"Best score ({best_score:.3f}) too low"
     
     return True, f"Optimization test passed: best={best_score:.3f}, range={score_range:.3f}"
@@ -376,7 +380,6 @@ def run_e2e_test(quote: str, verbose: bool = False) -> bool:
         
     finally:
         # Cleanup
-        import shutil
         if verbose:
             print(f"\nKeeping workdir for inspection: {workdir}")
         else:
