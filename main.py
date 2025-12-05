@@ -201,15 +201,18 @@ def detect_audio_devices():
 
 def test_audio_device(card: str, device: str, duration: float = 1.0):
     """Test if an audio device is active by recording a short sample.
-    Returns (success, peak_rms) tuple.
+    Returns (success, quality_score, reason) tuple.
+    Quality score > 0 means real microphone, < 0 means rejected.
     """
     try:
         test_file = TEMP_DIR / f"test_card{card}_dev{device}.wav"
         cmd = [
             "arecord",
             "-D", f"plughw:{card},{device}",
-            "-d", str(duration),
-            "-f", "cd",
+            "-d", str(int(duration)),
+            "-f", "S16_LE",  # 16-bit signed little endian
+            "-r", "16000",   # 16kHz sample rate (faster, sufficient for speech)
+            "-c", "1",       # Mono (faster)
             "-t", "wav",
             str(test_file)
         ]
@@ -217,75 +220,150 @@ def test_audio_device(card: str, device: str, duration: float = 1.0):
         result = subprocess.run(cmd, capture_output=True, timeout=duration + 2)
         
         if result.returncode == 0 and test_file.exists():
-            # Check RMS level
+            # Analyze audio to detect real microphone vs electrical noise
             try:
                 with wave.open(str(test_file), 'rb') as wf:
                     frames = wf.readframes(wf.getnframes())
                     audio = np.frombuffer(frames, dtype=np.int16)
-                    if wf.getnchannels() > 1:
-                        audio = audio.reshape(-1, wf.getnchannels()).mean(axis=1)
-                    peak_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+                    sample_rate = wf.getframerate()
+                    
+                    # Calculate overall RMS
+                    mean_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+                    
+                    # Calculate variance/dynamics to detect real audio vs static noise
+                    # Split audio into 100ms windows and check variation
+                    window_size = int(sample_rate * 0.1)  # 100ms windows
+                    num_windows = len(audio) // window_size
+                    
+                    if num_windows > 0:
+                        windows = audio[:num_windows * window_size].reshape(num_windows, window_size)
+                        window_rms = np.sqrt(np.mean(windows.astype(np.float64) ** 2, axis=1))
+                        rms_variance = float(np.std(window_rms))
+                        rms_mean = float(np.mean(window_rms))
+                        coefficient_of_variation = rms_variance / rms_mean if rms_mean > 0 else 0
+                    else:
+                        coefficient_of_variation = 0
+                    
                     test_file.unlink(missing_ok=True)
-                    return (True, peak_rms)
+                    
+                    # Key insight: Real ambient room noise is STEADY (low CV < 0.5)
+                    # Electrical/digital noise is SPIKY (high CV > 1.0)
+                    if mean_rms < 10:
+                        return (True, 0, "Too quiet - no input")
+                    elif coefficient_of_variation > 1.0:
+                        return (True, -1000, "High variance - electrical noise/interference")
+                    elif mean_rms >= 50 and coefficient_of_variation < 0.5:
+                        return (True, mean_rms, "Steady signal - real microphone")
+                    else:
+                        return (True, mean_rms * 0.5, "Moderate quality")
+                        
             except Exception:
                 test_file.unlink(missing_ok=True)
-                return (False, 0.0)
+                return (False, 0.0, "Failed to analyze audio")
         
         test_file.unlink(missing_ok=True)
-        return (False, 0.0)
+        return (False, 0.0, "Recording failed")
         
     except Exception as e:
         if DEBUG:
             print(f"Failed to test device card{card},device{device}: {e}")
-        return (False, 0.0)
+        return (False, 0.0, f"Exception: {e}")
 
 
 def auto_detect_audio_device():
     """Auto-detect the best audio capture device.
     
     Strategy:
-    1. If only one device found, use it
-    2. If multiple devices, test each for 1 second and pick the one with highest RMS
-    3. Fall back to plughw:0,0 if detection fails
+    1. Apply name-based heuristics to skip known non-microphone devices
+    2. If only one candidate found, use it
+    3. If multiple candidates, test each for 1 second and pick the best real microphone
+    4. Fall back to plughw:0,0 if detection fails
     """
     global AUDIO_DEVICE
     
     devices = detect_audio_devices()
     
     if not devices:
-        if DEBUG:
-            print("⚠ No audio devices detected, using default plughw:0,0")
+        print("⚠ No audio devices detected, using default plughw:0,0")
         AUDIO_DEVICE = "plughw:0,0"
         return
     
-    if len(devices) == 1:
-        card, device, name = devices[0]
-        AUDIO_DEVICE = f"plughw:{card},{device}"
-        print(f"✓ Auto-detected single audio device: {AUDIO_DEVICE} ({name})")
-        return
+    print(f"Found {len(devices)} audio devices")
     
-    # Multiple devices - test each and pick the most active one
-    print(f"Found {len(devices)} audio devices, testing...")
-    best_device = None
-    best_rms = 0.0
+    # Apply name-based heuristics to filter out known non-microphone devices
+    filtered_devices = []
+    skipped_devices = []
     
     for card, device, name in devices:
-        device_id = f"plughw:{card},{device}"
-        if DEBUG:
-            print(f"  Testing {device_id} ({name})...")
-        success, rms = test_audio_device(card, device, duration=1.0)
-        if success:
-            if DEBUG:
-                print(f"    RMS: {rms:.1f}")
-            if rms > best_rms:
-                best_rms = rms
-                best_device = (device_id, name)
+        name_lower = name.lower()
+        skip = False
+        reason = ""
+        
+        # Skip known internal/chipset audio that isn't real microphone input
+        if "sof-hda-dsp" in name_lower:
+            skip = True
+            reason = "Intel Smart Sound chipset (not external mic)"
+        elif "hdmi" in name_lower:
+            skip = True
+            reason = "HDMI audio output"
+        elif "loopback" in name_lower:
+            skip = True
+            reason = "Virtual loopback device"
+        
+        if skip:
+            skipped_devices.append((card, device, name, reason))
+            print(f"  Skipped plughw:{card},{device} ({name}) - {reason}")
+        else:
+            filtered_devices.append((card, device, name))
     
-    if best_device:
+    # Use filtered list, or all devices if everything was filtered out
+    test_devices = filtered_devices if filtered_devices else devices
+    if not filtered_devices:
+        print("  ⚠ All devices skipped by heuristics, testing all anyway")
+    
+    if len(test_devices) == 1:
+        card, device, name = test_devices[0]
+        AUDIO_DEVICE = f"plughw:{card},{device}"
+        print(f"✓ Auto-detected single candidate: {AUDIO_DEVICE} ({name})")
+        return
+    
+    # Multiple devices - test each and pick the best real microphone
+    print(f"Testing {len(test_devices)} candidate device(s)...")
+    best_device = None
+    best_quality = -9999
+    
+    for card, device, name in test_devices:
+        device_id = f"plughw:{card},{device}"
+        print(f"  Testing {device_id} ({name})...")
+        success, quality, reason = test_audio_device(card, device, duration=1.0)
+        
+        if success:
+            if quality > 0:
+                print(f"    ✓ Real microphone detected - Quality: {quality:.1f}")
+            elif quality == 0:
+                print(f"    ⚠ {reason}")
+            else:
+                print(f"    ✗ Rejected - {reason}")
+            
+            # Prefer USB devices if quality is similar
+            usb_bonus = 50 if "usb" in name.lower() else 0
+            adjusted_quality = quality + usb_bonus
+            
+            if adjusted_quality > best_quality:
+                best_quality = quality  # Store original quality
+                best_device = (device_id, name, reason if quality <= 0 else None)
+    
+    if best_device and best_quality > 0:
         AUDIO_DEVICE = best_device[0]
-        print(f"✓ Selected most active device: {AUDIO_DEVICE} ({best_device[1]}) with RMS {best_rms:.1f}")
+        print(f"✓ Selected best device: {AUDIO_DEVICE} ({best_device[1]}) - Quality: {best_quality:.1f}")
+    elif best_device:
+        # All tests returned low quality, but use best available
+        AUDIO_DEVICE = best_device[0]
+        print(f"⚠ Using best available device: {AUDIO_DEVICE} ({best_device[1]})")
+        if best_device[2]:
+            print(f"  Note: {best_device[2]}")
     else:
-        # All tests failed, use first device
+        # All tests failed, use first device from original list
         card, device, name = devices[0]
         AUDIO_DEVICE = f"plughw:{card},{device}"
         print(f"⚠ All device tests failed, using first device: {AUDIO_DEVICE} ({name})")
