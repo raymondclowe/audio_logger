@@ -40,12 +40,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
+import random
+import requests
 import wave
 
 DEFAULT_URL = "http://192.168.0.142:8085/transcribe"
 DEFAULT_DEVICE = "plughw:0,0"
 DEFAULT_MODEL = "base"
+
+# Random seed for reproducible parameter sampling
+RANDOM_SEED = 42
 
 # Parameter space for calibration
 # Each parameter has a name and list of values to try
@@ -232,6 +236,11 @@ def build_sox_command(
     params: Dict[str, str]
 ) -> List[str]:
     """Build the sox command from parameters."""
+    # Compand parameters:
+    # "6:-70,-65,-40" = transfer function: at -70dB input map to -65dB, at -40dB input map to -40dB (expand quiet, compress loud)
+    # "-5" = gain adjustment in dB
+    # "-90" = initial level (treat as silence below this)
+    # "0.05" = delay for lookahead
     cmd = [
         "sox", str(input_path), str(output_path),
         "noisered", str(noise_profile), params["noisered"],
@@ -264,7 +273,6 @@ def apply_sox_processing(
 
 def transcribe(url: str, model: str, wav_path: Path) -> str:
     """Transcribe audio file using the transcription service."""
-    import requests
     with open(wav_path, 'rb') as f:
         files = {'file': f}
         params = {'model': model}
@@ -342,8 +350,7 @@ def generate_parameter_combinations(param_space: Dict[str, List[str]], max_combi
         combinations = [tuple(BASELINE_PARAMS[k] for k in keys)]
 
         # Sample additional combinations
-        import random
-        random.seed(42)  # For reproducibility
+        random.seed(RANDOM_SEED)
         sampled = random.sample(all_combinations, max_combinations - 1)
         combinations.extend(sampled)
     else:
