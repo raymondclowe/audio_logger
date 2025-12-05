@@ -901,10 +901,14 @@ def main():
         print(f"\nResults saved to: {output_file}")
 
         # Save calibration config file for main.py to use
-        with open(CALIBRATION_CONFIG_FILE, 'w') as f:
-            json.dump(results_data, f, indent=2)
-        print(f"Calibration config saved to: {CALIBRATION_CONFIG_FILE}")
-        print("\n✓ main.py will automatically use these settings on next run.")
+        try:
+            with open(CALIBRATION_CONFIG_FILE, 'w') as f:
+                json.dump(results_data, f, indent=2)
+            print(f"Calibration config saved to: {CALIBRATION_CONFIG_FILE}")
+            print("\n✓ main.py will automatically use these settings on next run.")
+        except Exception as e:
+            print(f"\n⚠ Warning: Could not save calibration config to {CALIBRATION_CONFIG_FILE}: {e}")
+            print("  You can manually copy the results from the output file.")
 
         # Cleanup
         if not args.keep_workdir and args.output:

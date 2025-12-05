@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 # Import from the same directory (room_calibration.py is in tools/)
 from room_calibration import (
     BASELINE_PARAMS,
+    CALIBRATION_CONFIG_FILE,
     PARAMETER_RANGES,
     PARAMETER_SPACE,
     CalibrationResult,
@@ -238,8 +239,6 @@ def test_mock_calibration() -> Tuple[bool, str]:
 def test_calibration_config_file() -> Tuple[bool, str]:
     """Test that calibration config file path is correctly defined."""
     # Verify CALIBRATION_CONFIG_FILE is defined and is a Path
-    from room_calibration import CALIBRATION_CONFIG_FILE
-    
     if not isinstance(CALIBRATION_CONFIG_FILE, Path):
         return False, f"CALIBRATION_CONFIG_FILE should be a Path, got {type(CALIBRATION_CONFIG_FILE)}"
     
