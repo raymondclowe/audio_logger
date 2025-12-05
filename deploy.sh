@@ -6,7 +6,7 @@ set -e
 
 AUDIO_LOGGER_HOME="/opt/audio_logger"
 SERVICE_FILE="/etc/systemd/system/audio_logger.service"
-SOURCE_DIR="/home/tc3/audio_logger"
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "=== Audio Logger Deployment ==="
 
@@ -29,8 +29,13 @@ sudo mkdir -p "$AUDIO_LOGGER_HOME"
 echo "Copying project files to $AUDIO_LOGGER_HOME..."
 sudo cp -r "$SOURCE_DIR"/.venv "$AUDIO_LOGGER_HOME/" || sudo cp -r "$SOURCE_DIR"/.venv "$AUDIO_LOGGER_HOME/"
 sudo cp "$SOURCE_DIR"/main.py "$AUDIO_LOGGER_HOME/"
+sudo cp "$SOURCE_DIR"/audio_logger_config.py "$AUDIO_LOGGER_HOME/"
 sudo cp "$SOURCE_DIR"/pyproject.toml "$AUDIO_LOGGER_HOME/"
 sudo cp "$SOURCE_DIR"/README.md "$AUDIO_LOGGER_HOME/"
+# Copy config file if it exists
+[ -f "$SOURCE_DIR/audio_logger.json" ] && sudo cp "$SOURCE_DIR"/audio_logger.json "$AUDIO_LOGGER_HOME/"
+# Copy room calibration config if it exists
+[ -f "$SOURCE_DIR/room_calibration_config.json" ] && sudo cp "$SOURCE_DIR"/room_calibration_config.json "$AUDIO_LOGGER_HOME/"
 sudo mkdir -p "$AUDIO_LOGGER_HOME/logs"
 sudo mkdir -p "$AUDIO_LOGGER_HOME/temp"
 
@@ -43,9 +48,10 @@ sudo chmod 755 "$AUDIO_LOGGER_HOME/temp"
 sudo chmod 755 "$AUDIO_LOGGER_HOME/.venv/bin/python"
 sudo chmod 644 "$AUDIO_LOGGER_HOME/main.py"
 
-# Add tc3 to audiologger group
-echo "Adding tc3 to audiologger group..."
-sudo usermod -a -G audiologger tc3
+# Add current user to audiologger group
+CURRENT_USER="${SUDO_USER:-$USER}"
+echo "Adding $CURRENT_USER to audiologger group..."
+sudo usermod -a -G audiologger "$CURRENT_USER"
 
 # Install systemd service
 echo "Installing systemd service..."

@@ -7,3 +7,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 room_calibration_config.json
+.venv/
+tools/calibration_output/
+tools/calibration_debug.txt

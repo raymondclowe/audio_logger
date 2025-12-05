@@ -1,28 +1,30 @@
-import http.server
-import socketserver
-# Health check globals
-LAST_LOG_TIME = None
-LAST_ERROR = None
 #!/usr/bin/env python3
 """
 Continuous audio logger with transcription.
 Records 1-minute segments, cleans audio, transcribes, and logs to daily files.
 """
 
+import http.server
 import json
 import os
+import queue
+import socketserver
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import wave
 from datetime import datetime
 from pathlib import Path
-import requests
+
 import numpy as np
 import psutil
-import wave
-import threading
-import queue
+import requests
+
+# Health check globals
+LAST_LOG_TIME = None
+LAST_ERROR = None
 
 # Import configuration system
 from audio_logger_config import get_config_manager, load_config
