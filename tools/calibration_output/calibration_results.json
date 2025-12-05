@@ -1,0 +1,136 @@
+{
+  "best_params": {
+    "noisered": "0.21",
+    "highpass": "300",
+    "lowpass": "3400",
+    "compand_attack": "0.03",
+    "compand_decay": "0.15",
+    "eq1_freq": "800",
+    "eq1_width": "400",
+    "eq1_gain": "4",
+    "eq2_freq": "2500",
+    "eq2_width": "800",
+    "eq2_gain": "3"
+  },
+  "best_score": 0.8047337278106509,
+  "best_transcript": "After having been twice driven back by heavy south-western gales, Her Majesty's ship being a ten-gun brick under the command of Captain Fitzroy R.M. sailed from Devon Port on 27 December 1831, the object of the expedition was to complete the survey of Hategonia and Sierra Delfeoico commenced under Captain King in 1826 to 1830. To survey the shores of Chile, Peru, and of some islands in the Pacific, and to carry a chain of chronometrical measurements around the world. On the 6th of January, we reached Tenerife. But we're prevented landing by fears of our bringing the the Colourer. The next morning we saw the sun rise behind the rugged outline of the Grand Canary Island, suddenly illuminate the peak of Tenerife. Whilst the lower parts were viled in fleecy clouds, this was the first of many delightful days never to be forgotten. On the 16th of January 1832, we anchored at Porto Parya in San Jaco, the chief island of the Capitone Verde Apagelico.",
+  "sox_command": [
+    "sox",
+    "room_calibration-example.wav",
+    "/home/tc3/audio_logger/tools/calibration_output/variant_0001.wav",
+    "noisered",
+    "/home/tc3/audio_logger/tools/calibration_output/noise.prof",
+    "0.21",
+    "highpass",
+    "300",
+    "lowpass",
+    "3400",
+    "compand",
+    "0.03,0.15",
+    "6:-70,-65,-40",
+    "-5",
+    "-90",
+    "0.05",
+    "equalizer",
+    "800",
+    "400",
+    "4",
+    "equalizer",
+    "2500",
+    "800",
+    "3",
+    "norm",
+    "-3",
+    "rate",
+    "16k",
+    "channels",
+    "1"
+  ],
+  "all_results": [
+    {
+      "params": {
+        "noisered": "0.21",
+        "highpass": "300",
+        "lowpass": "3400",
+        "compand_attack": "0.03",
+        "compand_decay": "0.15",
+        "eq1_freq": "800",
+        "eq1_width": "400",
+        "eq1_gain": "4",
+        "eq2_freq": "2500",
+        "eq2_width": "800",
+        "eq2_gain": "3"
+      },
+      "score": 0.8047337278106509,
+      "transcript": "After having been twice driven back by heavy south-western gales, Her Majesty's ship being a ten-gun brick under the command of Captain Fitzroy R.M. sailed from Devon Port on 27 December 1831, the object of the expedition was to complete the survey of Hategonia and Sierra Delfeoico commenced under Captain King in 1826 to 1830. To survey the shores of Chile, Peru, and of some islands in the Pacific, and to carry a chain of chronometrical measurements around the world. On the 6th of January, we reached Tenerife. But we're prevented landing by fears of our bringing the the Colourer. The next morning we saw the sun rise behind the rugged outline of the Grand Canary Island, suddenly illuminate the peak of Tenerife. Whilst the lower parts were viled in fleecy clouds, this was the first of many delightful days never to be forgotten. On the 16th of January 1832, we anchored at Porto Parya in San Jaco, the chief island of the Capitone Verde Apagelico."
+    },
+    {
+      "params": {
+        "noisered": "0.30",
+        "highpass": "400",
+        "lowpass": "3000",
+        "compand_attack": "0.05",
+        "compand_decay": "0.3",
+        "eq1_freq": "1200",
+        "eq1_width": "500",
+        "eq1_gain": "2",
+        "eq2_freq": "3000",
+        "eq2_width": "1200",
+        "eq2_gain": "3"
+      },
+      "score": 0.7810650887573964,
+      "transcript": "After having been twice driven back by heavy south-western gales, Her Majesty's ship be a tin-gun brick under the command of Captain Fitzroy R.M. sailed from Devonport on the 27th of December 1831, the object of the expedition was to complete the survey of Patagonia and Tiara Del Viego, commenced under Captain Keen in 1826 to 1830. To survey the shores of Chile, Peru, out of some islands in the Pacific, and to carry a chain of chronometrical measurements around the world. On the 6th of January, we reached Tenerife, where we prevented landing by fears about bringing the cholera. The next morning we saw the sunrise behind the rugged outline of the Grand Canary Island. Suddenly, lumenate the peak of Tenerife. What the lower parts were viled in fleecy clouds. This was the first and many delightful days never to be forgotten. On the 16th of January 1832, we anchored at Porto Prya in San Jaco, the chief island of Hepatotherapy of ArpeicalIP."
+    },
+    {
+      "params": {
+        "noisered": "0.15",
+        "highpass": "400",
+        "lowpass": "3400",
+        "compand_attack": "0.05",
+        "compand_decay": "0.15",
+        "eq1_freq": "800",
+        "eq1_width": "400",
+        "eq1_gain": "4",
+        "eq2_freq": "3500",
+        "eq2_width": "800",
+        "eq2_gain": "3"
+      },
+      "score": 0.7810650887573964,
+      "transcript": "After having been twice driven back by heavy south-western gales, a Magistise ship vehicle, a ten-gun brick, under the command of Captain Fitzroy R.M. sailed from Devonport. On 27 December 1831, the object of the expedition was to complete the survey of Patagonia and Tiara Delphierico commenced under Captain King in 1826 to 1830. To survey the shores of Chile, Peru, and of some islands in the Pacific, and to carry a chain of of chronometrical measurements around the world. On the 6th of January, we reached Tenerife. But were prevented landing by fears about bringing the cholera. The next morning, we saw the sunrise behind the rugged outline of the Grand Canary Island. Suddenly, illuminate the peak of Tenerife. While the lower parts were viled in fleecy clouds, This was the first many delightful days never to be forgotten. On the 16th of January 1832, we anchored at Porto Pryor in San Giago, the chief island of the Capitavirdi Apagelica."
+    },
+    {
+      "params": {
+        "noisered": "0.21",
+        "highpass": "100",
+        "lowpass": "3000",
+        "compand_attack": "0.1",
+        "compand_decay": "0.3",
+        "eq1_freq": "1200",
+        "eq1_width": "400",
+        "eq1_gain": "2",
+        "eq2_freq": "3500",
+        "eq2_width": "1000",
+        "eq2_gain": "2"
+      },
+      "score": 0.7810650887573964,
+      "transcript": "After having been twice driven back by heavy south-western gales, Her Majesty's ship beam, a tin gun brick under the command of Captain Fitzroy R.M. sailed from Devon Port. On the 27th of December, 1831, the object of the expedition was to complete the survey Hattagonia and Tiara Del Fiego commenced under Captain King in 1836 to 1830. To survey the shores of Chile, Peru, out of some islands in the Pacific, and to carry a chain of colour-metrical measurements around the world. On the 6th of January, we reached Tenerife. But were prevented landing by fears about bringing the cholera. The next morning we saw the sunrise behind the rugged outline of the Grand Canary Island, suddenly illuminate the peak of Tenerife. Whilst the lower parts were viled in fleecy clouds, this was the first of many delightful days never to be forgotten. On the 16th of January 1832, we anchored at Porto Parya in San Giago, the chief island of the Capitavirni Apagelica."
+    },
+    {
+      "params": {
+        "noisered": "0.15",
+        "highpass": "100",
+        "lowpass": "3800",
+        "compand_attack": "0.1",
+        "compand_decay": "0.3",
+        "eq1_freq": "1200",
+        "eq1_width": "600",
+        "eq1_gain": "4",
+        "eq2_freq": "3000",
+        "eq2_width": "1000",
+        "eq2_gain": "2"
+      },
+      "score": 0.7692307692307692,
+      "transcript": "After having been twice driven back by heavy south-western gales, Her Majesty's ship Beagle, a ten-gun brick, under the command of Captain Fitzroy, R.M. sailed from Devon Port. On 27 December 1831, the object of the expedition was to complete the survey of Patagonia and The Teara de L'Evier \u00c9go, commenced under Captain King in 1826 to 1830. To survey the shores of Chile, Peru and of some islands in the Pacific, and to carry a chain of chronometrical measurements around the world. On the 6th of January, we reached Tenerife. But we prevented landing by fears of our bringing the cholera. The next morning we saw the sunrise behind the rugged outline of the Grand Canary Island. Suddenly, illuminate the peak of Tenerife. Whilst the lower parts were viled in fleecy clouds. This was the first of many delightful days never to be forgotten. On the 16th of January, 1832, we anchored at Porto Prya in San Jango, the chief island of at Cap recovered of early \u0440\u0430\u0437\u0434\u0435\u043bica. Oyr oi boundary"
+    }
+  ]
+}

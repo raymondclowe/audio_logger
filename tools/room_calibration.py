@@ -360,10 +360,10 @@ def calculate_word_accuracy(reference: str, transcript: str, metric: str = "wer"
                 jiwer.RemoveMultipleSpaces(),
                 jiwer.Strip(),
             ])
-            
+
             ref_normalized = transforms(reference)
             trans_normalized = transforms(transcript)
-            
+
             if metric == "cer":
                 error_rate = jiwer.cer(ref_normalized, trans_normalized)
             else:
@@ -729,8 +729,20 @@ def main():
 
     args = parser.parse_args()
 
+    # Handle reference text - check if it's a file path
+    if args.reference and not args.reference.startswith('"') and not args.reference.startswith("'"):
+        ref_path = Path(args.reference)
+        if ref_path.exists() and ref_path.is_file():
+            try:
+                args.reference = ref_path.read_text().strip()
+                print(f"Loaded reference text from file: {ref_path}")
+            except Exception as e:
+                print(f"Error reading reference file {ref_path}: {e}")
+                sys.exit(1)
+
     # Create working directory
-    workdir = Path(tempfile.mkdtemp(prefix='room_calibration_'))
+    workdir = Path(__file__).parent / "calibration_output"
+    workdir.mkdir(exist_ok=True)
     print(f"Working directory: {workdir}")
 
     try:
@@ -892,7 +904,8 @@ def main():
                 shutil.copy(output_file, args.output)
 
     finally:
-        if not args.keep_workdir:
+        # Only clean up temporary directories, keep workspace directories for inspection
+        if not args.keep_workdir and str(workdir).startswith('/tmp'):
             print(f"\nCleaning up working directory: {workdir}")
             shutil.rmtree(workdir, ignore_errors=True)
         else:
