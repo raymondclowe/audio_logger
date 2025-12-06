@@ -213,7 +213,7 @@ def run_guided_calibration(
     model: str,
     trials: int,
     verbose: bool = False,
-    recording_duration: int = 30
+    recording_duration: int = 60
 ) -> bool:
     """Run the guided calibration workflow."""
     
