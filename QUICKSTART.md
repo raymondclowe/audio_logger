@@ -12,6 +12,24 @@ bash setup.sh --production
 
 That's it! The service will be running and logging audio transcripts to `/opt/audio_logger/logs/`
 
+## Room Calibration (Recommended for Better Performance)
+
+**For best transcription accuracy, run room calibration after installation.** This optimizes audio processing parameters for your specific room acoustics and microphone:
+
+```bash
+# Stop the service temporarily
+sudo systemctl stop audio_logger
+
+# Run guided calibration (interactive, easy to use)
+cd /opt/audio_logger
+python tools/guided_calibration.py
+
+# Restart the service with optimized settings
+sudo systemctl start audio_logger
+```
+
+The calibration will prompt you to read sample text aloud, then automatically find the best settings for your environment.
+
 ## What the Setup Does
 
 1. ✓ Installs system dependencies (sox, alsa-utils)
