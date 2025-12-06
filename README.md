@@ -176,14 +176,44 @@ groups
 - Network access to Whisper transcription service
 - Sufficient disk space for audio files and logs
 
-## Room Calibration
+## Room Calibration (Recommended)
 
-The audio logger includes a room calibration tool to find optimal sox audio processing parameters for your specific environment. Different rooms have different acoustic properties (reverb, ambient noise, etc.) that affect transcription accuracy.
+**Running room calibration significantly improves transcription accuracy** by optimizing audio processing parameters for your specific room acoustics, microphone, and ambient noise levels. We strongly recommend running calibration before using the audio logger in production.
 
-### Running Room Calibration
+The audio logger includes two calibration tools:
+- **Guided Calibration** (`guided_calibration.py`) - Interactive step-by-step workflow (recommended for most users)
+- **Advanced Calibration** (`room_calibration.py`) - Full control over all options
+
+### Guided Calibration (Easiest)
+
+The guided calibration tool provides an interactive workflow that walks you through the entire process:
 
 ```bash
-# Record a speech sample and calibrate (recommended)
+# Run guided calibration (auto-detects audio device)
+python tools/guided_calibration.py
+
+# Specify audio device
+python tools/guided_calibration.py --device plughw:3,0
+
+# Use more optimization trials for better results
+python tools/guided_calibration.py --trials 100
+
+# Verbose output to see progress
+python tools/guided_calibration.py -v
+```
+
+The guided calibration will:
+1. Display sample text (Darwin's Voyage excerpt) for you to read aloud
+2. Record your voice at 16kHz mono WAV
+3. Run Bayesian optimization to find optimal sox parameters
+4. Automatically save settings to `room_calibration_config.json`
+
+### Advanced Calibration
+
+For more control, use the full room calibration tool:
+
+```bash
+# Record a speech sample and calibrate
 python tools/room_calibration.py --record --device plughw:0,0
 
 # Use an existing audio file with known transcript
@@ -199,9 +229,9 @@ python tools/room_calibration.py --record --quick
 ### What It Does
 
 1. Records or generates test audio
-2. Tests multiple sox parameter combinations (noise reduction, filters, EQ)
+2. Tests multiple sox parameter combinations (noise reduction, filters, EQ) using Bayesian optimization
 3. Transcribes each variant using the Whisper API
-4. Compares transcripts to find the most accurate settings
+4. Compares transcripts using Word Error Rate (WER) to find the most accurate settings
 5. Saves optimized settings to `room_calibration_config.json`
 6. The main script automatically loads these settings on next run
 
@@ -239,9 +269,12 @@ If you prefer to manually configure settings, you can create or edit `room_calib
 
 Additional tools are available in the `tools/` directory:
 
-- `room_calibration.py` - Find optimal sox settings for your room
+- `guided_calibration.py` - **Interactive guided calibration** (recommended for most users)
+- `room_calibration.py` - Advanced room calibration with full options
 - `ab_compare.py` - Interactive A/B testing for sox cleaning chains
 - `ab_test_sox.py` - Batch A/B testing with transcription comparison
+- `test_calibration.py` - Test suite for calibration tools
+- `test_guided_calibration.py` - Test suite for guided calibration
 
 ## TODO
 
