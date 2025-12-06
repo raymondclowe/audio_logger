@@ -20,6 +20,8 @@ from unittest.mock import patch, MagicMock
 # Import from the guided_calibration module
 from guided_calibration import (
     SAMPLE_TEXT,
+    SAMPLE_TEXT_FILE,
+    load_sample_text,
     detect_audio_device,
     display_sample_text,
 )
@@ -53,6 +55,19 @@ def test_sample_text_exists() -> Tuple[bool, str]:
         return False, f"SAMPLE_TEXT has too few words ({words})"
     
     return True, f"SAMPLE_TEXT valid: {len(SAMPLE_TEXT)} chars, {words} words, {sentences} sentences"
+
+
+def test_sample_text_from_file() -> Tuple[bool, str]:
+    """Test that sample text is loaded from the shared file."""
+    if not SAMPLE_TEXT_FILE.exists():
+        return False, f"Sample text file not found: {SAMPLE_TEXT_FILE}"
+    
+    # Verify loaded text matches file content
+    file_content = SAMPLE_TEXT_FILE.read_text().strip()
+    if SAMPLE_TEXT != file_content:
+        return False, "SAMPLE_TEXT does not match file content"
+    
+    return True, f"SAMPLE_TEXT correctly loaded from {SAMPLE_TEXT_FILE.name}"
 
 
 def test_sample_text_content() -> Tuple[bool, str]:
@@ -201,6 +216,7 @@ def run_all_tests(verbose: bool = False) -> bool:
     """Run all test functions."""
     tests = [
         ("Sample Text Exists", test_sample_text_exists),
+        ("Sample Text From File", test_sample_text_from_file),
         ("Sample Text Content", test_sample_text_content),
         ("Device Detection Format", test_device_detection_format),
         ("Device Detection Filters", test_device_detection_filters_hdmi),
