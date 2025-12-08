@@ -7,6 +7,8 @@ Handles loading, validation, and hostname resolution for services.
 import json
 import socket
 import time
+import requests
+from requests.exceptions import RequestException
 from pathlib import Path
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
@@ -17,6 +19,7 @@ class TranscriptionConfig:
     """Configuration for transcription service."""
     url: str
     model: str
+    language: str = "en"
     resolved_ip: Optional[str] = None
     resolved_port: Optional[int] = None
     is_localhost: bool = False
@@ -34,6 +37,8 @@ class AudioLoggerConfig:
     transcription: TranscriptionConfig
     audio_device: Optional[str] = None
     debug: bool = False
+    record_duration: int = 60
+    overlap_duration: int = 5
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AudioLoggerConfig':
@@ -41,13 +46,16 @@ class AudioLoggerConfig:
         trans_data = data.get('transcription', {})
         transcription = TranscriptionConfig(
             url=trans_data.get('url', 'http://localhost:8085/transcribe'),
-            model=trans_data.get('model', 'small')
+            model=trans_data.get('model', 'small'),
+            language=trans_data.get('language', 'en')
         )
 
         return cls(
             transcription=transcription,
             audio_device=data.get('audio_device'),
-            debug=data.get('debug', False)
+            debug=data.get('debug', False),
+            record_duration=data.get('record_duration', 60),
+            overlap_duration=data.get('overlap_duration', 5)
         )
 
 
@@ -177,33 +185,101 @@ class ConfigManager:
         except Exception:
             return False
 
+    def get_record_duration(self) -> int:
+        """Get the record duration."""
+        if self.config is None:
+            self.load_config()
+        if self.config and hasattr(self.config, 'record_duration'):
+            return self.config.record_duration
+        raise AttributeError("record_duration is not defined in the configuration")
+
+    def get_overlap_duration(self) -> int:
+        """Get the overlap duration."""
+        if self.config is None:
+            self.load_config()
+        if self.config and hasattr(self.config, 'overlap_duration'):
+            return self.config.overlap_duration
+        raise AttributeError("overlap_duration is not defined in the configuration")
+
     def get_transcription_url(self) -> str:
         """Get the resolved transcription URL."""
-        if not self.config:
+        if self.config is None:
             self.load_config()
-
-        return self.config.transcription.get_resolved_url()
+        if self.config and hasattr(self.config.transcription, 'get_resolved_url'):
+            return self.config.transcription.get_resolved_url()
+        raise AttributeError("transcription URL is not defined in the configuration")
 
     def get_transcription_model(self) -> str:
         """Get the transcription model."""
-        if not self.config:
+        if self.config is None:
             self.load_config()
+        if self.config and hasattr(self.config.transcription, 'model'):
+            return self.config.transcription.model
+        raise AttributeError("transcription model is not defined in the configuration")
 
-        return self.config.transcription.model
+    def get_transcription_language(self) -> str:
+        """Get the transcription language code."""
+        if self.config is None:
+            self.load_config()
+        if self.config and hasattr(self.config.transcription, 'language'):
+            return self.config.transcription.language
+        raise AttributeError("transcription language is not defined in the configuration")
 
     def is_debug_enabled(self) -> bool:
         """Check if debug mode is enabled."""
-        if not self.config:
+        if self.config is None:
             self.load_config()
-
-        return self.config.debug
+        if self.config and hasattr(self.config, 'debug'):
+            return self.config.debug
+        raise AttributeError("debug is not defined in the configuration")
 
     def get_audio_device(self) -> Optional[str]:
         """Get the configured audio device."""
-        if not self.config:
+        if self.config is None:
             self.load_config()
+        if self.config and hasattr(self.config, 'audio_device'):
+            return self.config.audio_device
+        raise AttributeError("audio_device is not defined in the configuration")
 
-        return self.config.audio_device
+
+class TranscriptionService:
+    """Handles interaction with the Mini Transcriber service."""
+
+    def __init__(self, base_url: str, timeout: int = 60):
+        self.base_url = base_url
+        self.timeout = timeout
+
+    def transcribe(self, audio_file_path: str, language: str = "en", model: str = "small") -> Optional[Dict[str, Any]]:
+        """Send an audio file for transcription and wait for the result."""
+        url = f"{self.base_url}/transcribe"
+        files = {"audio": open(audio_file_path, "rb")}
+        data = {"language": language, "model": model}
+
+        try:
+            response = requests.post(url, files=files, data=data, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except RequestException as e:
+            print(f"Error during transcription request: {e}")
+            return None
+        finally:
+            files["audio"].close()
+
+    def handle_transcription(self, audio_file_path: str, retries: int = 3, backoff_factor: int = 2) -> Optional[Dict[str, Any]]:
+        """Handle transcription with retries and backoff."""
+        attempt = 0
+        while attempt < retries:
+            result = self.transcribe(audio_file_path)
+            if result:
+                return result
+
+            attempt += 1
+            wait_time = backoff_factor ** attempt
+            print(f"Retrying in {wait_time} seconds...")
+            time.sleep(wait_time)
+
+        print("Transcription failed after multiple attempts.")
+        return None
 
 
 # Global config manager instance
@@ -231,3 +307,11 @@ def get_transcription_url() -> str:
 def get_transcription_model() -> str:
     """Get transcription model (convenience function)."""
     return get_config_manager().get_transcription_model()
+
+
+def get_transcription_language() -> str:
+    """Get transcription language (convenience function)."""
+    return get_config_manager().get_transcription_language()
+
+
+__all__ = ["get_config_manager", "load_config"]

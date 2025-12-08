@@ -18,9 +18,11 @@ import wave
 from datetime import datetime
 from pathlib import Path
 
+
 import numpy as np
 import psutil
 import requests
+from typing import Optional
 
 # Health check globals
 LAST_LOG_TIME = None
@@ -38,8 +40,8 @@ DEBUG = "--debug" in sys.argv or config_manager.is_debug_enabled() or Path(".deb
 
 # Configuration - loaded from config file with fallbacks
 AUDIO_DEVICE = config_manager.get_audio_device()  # Will be auto-detected if None
-RECORD_DURATION = 20 if DEBUG else 60  # seconds - shorter in debug mode for faster testing
-OVERLAP_DURATION = 2  # seconds - overlap between chunks to avoid word breaks
+RECORD_DURATION = config_manager.get_record_duration()  # seconds, from config file
+OVERLAP_DURATION = config_manager.get_overlap_duration()  # seconds, from config file
 LOG_DIR = Path(__file__).parent / "logs"
 TEMP_DIR = Path(__file__).parent / "temp"
 NOISE_PROFILE = Path(__file__).parent / "temp" / "ambient_noise.prof"
@@ -808,7 +810,10 @@ def transcribe_audio(audio_path: Path) -> str:
             print(f"[transcribe_audio] Attempting transcription for {audio_path}")
         with open(audio_path, 'rb') as f:
             files = {'file': f}
-            params = {'model': config_manager.get_transcription_model()}
+            params = {
+                'model': config_manager.get_transcription_model(),
+                'language': config_manager.get_transcription_language()
+            }
             # Add context from previous transcription if available
             if LAST_TRANSCRIPT:
                 words = LAST_TRANSCRIPT.split()
@@ -816,11 +821,11 @@ def transcribe_audio(audio_path: Path) -> str:
                     context = ' '.join(words[-CONTEXT_WORDS:])
                 else:
                     context = LAST_TRANSCRIPT
-                params['prompt'] = f"Continuing conversation: ...{context}"
+                params['prompt'] = f"This is audio captured from a live microphone, notice breaks between speakers  - \" - Hey how are you doing? \n - I'm doing good. How are you?\", make a best effort to be reasonable but redact rude words or sensitive topics particularly sex and leave blanks or ellips rather than guess at words) Continue this conversation: ...{context}..."
             
             url = config_manager.get_transcription_url()
             if DEBUG:
-                print(f"[transcribe_audio] POST to {url} with model={params['model']}")
+                print(f"[transcribe_audio] POST to {url} with model={params['model']} language={params['language']}")
             
             response = requests.post(url, files=files, params=params, timeout=30)
             
@@ -854,7 +859,7 @@ def transcribe_audio(audio_path: Path) -> str:
         return ""
 
 
-def log_transcript(text: str, stats: dict = None, filename: str = None):
+def log_transcript(text: str, stats: Optional[dict] = None, filename: Optional[str] = None):
     """Append transcript with timestamp and audio stats to daily log file."""
     global LAST_LOG_TIME, LAST_ERROR
     if not text:
@@ -882,7 +887,7 @@ def log_transcript(text: str, stats: dict = None, filename: str = None):
             print(f"[log_transcript] Failed to write log: {e}")
 
 
-def log_event(event_type: str, message: str, filename: str = None, stats: dict = None):
+def log_event(event_type: str, message: str, filename: Optional[str] = None, stats: Optional[dict] = None):
     """Log diagnostic events to help track missing minutes.
     
     Events are logged to the daily log file with a [EVENT] prefix.

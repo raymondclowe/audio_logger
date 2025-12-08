@@ -1,8 +1,11 @@
 {
   "transcription": {
     "url": "http://192.168.0.142:8085/transcribe",
-    "model": "small"
+    "model": "small",
+    "language": "en"
   },
   "audio_device": null,
-  "debug": true
+  "debug": true,
+  "record_duration": 60,
+  "overlap_duration": 5
 }
