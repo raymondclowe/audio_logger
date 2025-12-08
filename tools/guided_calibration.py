@@ -21,6 +21,9 @@ Usage:
     # Use a different number of optimization trials
     python tools/guided_calibration.py --trials 100
 
+    # Use custom text file
+    python tools/guided_calibration.py --text my_calibration_text.txt
+
     # Verbose output
     python tools/guided_calibration.py -v
 """
@@ -52,8 +55,21 @@ from room_calibration import (
 SAMPLE_TEXT_FILE = Path(__file__).parent / "room_calibration-example.txt"
 
 
-def load_sample_text() -> str:
+def load_sample_text(text_file: Optional[Path] = None) -> str:
     """Load sample text from file for consistency with other tools."""
+    # Use custom text file if provided
+    if text_file is not None:
+        if text_file.exists():
+            try:
+                return text_file.read_text().strip()
+            except Exception as e:
+                print(f"⚠ Warning: Could not read custom text file: {e}")
+                print(f"  Falling back to default sample text")
+        else:
+            print(f"⚠ Warning: Custom text file not found: {text_file}")
+            print(f"  Falling back to default sample text")
+    
+    # Try default sample text file
     if SAMPLE_TEXT_FILE.exists():
         try:
             return SAMPLE_TEXT_FILE.read_text().strip()
@@ -62,10 +78,6 @@ def load_sample_text() -> str:
     
     # Fallback text if file is not available
     return """AFTER having been twice driven back by heavy southwestern gales, Her Majesty's ship Beagle, a ten-gun brig, under the command of Captain Fitz Roy, R. N., sailed from Devonport on the 27th of December, 1831. The object of the expedition was to complete the survey of Patagonia and Tierra del Fuego, commenced under Captain King in 1826 to 1830,--to survey the shores of Chile, Peru, and of some islands in the Pacific--and to carry a chain of chronometrical measurements round the World. On the 6th of January we reached Teneriffe, but were prevented landing, by fears of our bringing the cholera: the next morning we saw the sun rise behind the rugged outline of the Grand Canary island, and suddenly illuminate the Peak of Teneriffe, whilst the lower parts were veiled in fleecy clouds. This was the first of many delightful days never to be forgotten. On the 16th of January, 1832, we anchored at Porto Praya, in St. Jago, the chief island of the Cape de Verd archipelago."""
-
-
-# Load sample text once at module level for efficiency
-SAMPLE_TEXT = load_sample_text()
 
 
 def print_banner():
@@ -85,8 +97,9 @@ def print_instructions():
     print("WHAT YOU NEED TO DO:")
     print("  1. Position yourself in your normal speaking location")
     print("  2. Ensure your microphone is properly connected")
-    print("  3. Read the sample text aloud when prompted")
-    print("  4. Wait while the system finds the best settings")
+    print("  3. Stay SILENT during the 3-second countdown (captures ambient noise)")
+    print("  4. Read the sample text aloud clearly")
+    print("  5. Wait while the system finds the best settings")
     print()
 
 
@@ -137,20 +150,47 @@ def detect_audio_device() -> str:
         return DEFAULT_DEVICE
 
 
+def calculate_recording_duration(text: str, words_per_minute: int = 150) -> int:
+    """
+    Calculate recording duration based on text length.
+    
+    Args:
+        text: The text to be read
+        words_per_minute: Average speaking speed (default 150 wpm, which is moderate pace)
+    
+    Returns:
+        Recommended recording duration in seconds with buffer time
+    """
+    word_count = len(text.split())
+    # Calculate base time needed
+    base_seconds = int((word_count / words_per_minute) * 60)
+    # Add 30 second buffer for pauses and slower speakers
+    return base_seconds + 30
+
+
 def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) -> bool:
     """
     Record audio at 16kHz mono WAV format.
     
     This is the format optimized for speech transcription.
+    User can press Enter to stop recording early.
+    Starts with 3-second countdown for ambient noise capture.
     """
-    print(f"\n🎤 Recording for {duration} seconds...")
+    print(f"\n🎤 Starting in:")
+    
+    # 3-second countdown for ambient noise capture
+    for i in range(3, 0, -1):
+        print(f"   {i}...")
+        time.sleep(1)
+    
+    print(f"   🔴 RECORDING (up to {duration} seconds)")
     print("   (Read the sample text aloud now)")
+    print("   Press ENTER when you're done reading to stop early")
     print()
     
     cmd = [
         "arecord",
         "-D", device,
-        "-d", str(duration),
         "-f", "S16_LE",      # 16-bit signed little endian
         "-r", "16000",       # 16kHz sample rate
         "-c", "1",           # Mono
@@ -159,31 +199,65 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
     ]
     
     try:
-        # Show countdown while recording
+        import threading
+        import select
+        
+        # Start recording process
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
-        for remaining in range(duration, 0, -1):
-            print(f"   Recording... {remaining} seconds remaining", end="\r")
+        stop_recording = threading.Event()
+        
+        def wait_for_enter():
+            """Wait for user to press Enter in a separate thread."""
+            try:
+                # Use select to check if input is available (works on Unix systems)
+                import sys
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    sys.stdin.readline()  # Clear any buffered input
+                input()  # Wait for Enter
+                stop_recording.set()
+            except:
+                pass
+        
+        # Start thread to wait for Enter key
+        enter_thread = threading.Thread(target=wait_for_enter, daemon=True)
+        enter_thread.start()
+        
+        # Show countdown while recording
+        for elapsed in range(duration):
+            remaining = duration - elapsed
+            print(f"   Recording... {elapsed}s elapsed, {remaining}s remaining (or press ENTER to finish)", end="\r")
             time.sleep(1)
-            if process.poll() is not None:
+            
+            if stop_recording.is_set() or process.poll() is not None:
                 break
         
-        process.wait(timeout=5)
-        print(" " * 50, end="\r")  # Clear countdown line
+        # Stop the recording
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
         
-        if process.returncode == 0 and output_path.exists():
+        print(" " * 80, end="\r")  # Clear countdown line
+        
+        if output_path.exists() and output_path.stat().st_size > 1000:
             print("✓ Recording complete!")
             return True
         else:
-            print("✗ Recording failed")
+            print("✗ Recording failed or file too small")
             return False
             
     except Exception as e:
         print(f"✗ Recording error: {e}")
+        if process.poll() is None:
+            process.kill()
         return False
 
 
-def display_sample_text():
+def display_sample_text(text: str):
     """Display the sample text for the user to read."""
     print("\n" + "=" * 70)
     print("PLEASE READ THE FOLLOWING TEXT ALOUD:")
@@ -191,7 +265,7 @@ def display_sample_text():
     print()
     
     # Format text with line wrapping for readability
-    words = SAMPLE_TEXT.split()
+    words = text.split()
     line = ""
     for word in words:
         if len(line) + len(word) + 1 > 68:
@@ -213,18 +287,29 @@ def run_guided_calibration(
     model: str,
     trials: int,
     verbose: bool = False,
-    recording_duration: int = 60
+    recording_duration: Optional[int] = None,
+    text_file: Optional[Path] = None,
+    adaptive_ranges: bool = False
 ) -> bool:
     """Run the guided calibration workflow."""
     
     print_banner()
     print_instructions()
     
+    # Load the sample text (custom or default)
+    sample_text = load_sample_text(text_file)
+    
+    # Calculate recording duration if not explicitly provided
+    if recording_duration is None:
+        recording_duration = calculate_recording_duration(sample_text)
+    
     # Show detected device
     print(f"Audio device: {device}")
     print(f"Transcription URL: {url}")
     print(f"Model: {model}")
     print(f"Optimization trials: {trials}")
+    print(f"Text length: {len(sample_text.split())} words")
+    print(f"Recommended recording time: {recording_duration} seconds")
     print()
     
     # Check if Bayesian optimization is available
@@ -239,27 +324,25 @@ def run_guided_calibration(
     
     # Prompt user to start
     print("-" * 70)
+    print("When recording starts:")
+    print("  • Stay SILENT during the 3-second countdown (for noise profiling)")
+    print("  • Then read the text clearly")
+    print("  • Press ENTER when finished to stop early")
+    print()
     input("Press ENTER when you are ready to begin recording...")
     print()
     
     # Display sample text
-    display_sample_text()
+    display_sample_text(sample_text)
     
-    # Countdown before recording
-    print("Starting in...")
-    for i in range(3, 0, -1):
-        print(f"  {i}...")
-        time.sleep(1)
-    print()
-    
-    # Record audio
+    # Record audio (includes countdown)
     audio_path = workdir / "guided_calibration_sample.wav"
     if not record_audio_16k_mono(device, audio_path, recording_duration):
         print("\n✗ Failed to record audio. Please check your microphone.")
         return False
     
-    # Build noise profile
-    print("\n📊 Analyzing audio...")
+    # Build noise profile from the initial silence
+    print("\n📊 Building noise profile from ambient sound...")
     noise_profile = workdir / "noise.prof"
     if not build_noise_profile(audio_path, noise_profile):
         print("✗ Failed to build noise profile")
@@ -267,26 +350,29 @@ def run_guided_calibration(
     
     # Run optimization
     print("\n🔍 Finding optimal settings using Bayesian optimization...")
+    if adaptive_ranges:
+        print("   Using adaptive range expansion (3 phases)")
     print("   This may take several minutes depending on transcription service speed.")
     print()
     
     if HAS_OPTUNA:
         results = run_bayesian_optimization(
             input_audio=audio_path,
-            reference_text=SAMPLE_TEXT,
+            reference_text=sample_text,
             url=url,
             model=model,
             noise_profile=noise_profile,
             workdir=workdir,
             n_trials=trials,
             metric="wer",
-            verbose=verbose
+            verbose=verbose,
+            adaptive_ranges=adaptive_ranges
         )
     else:
         # Fall back to random sampling
         results = run_calibration(
             input_audio=audio_path,
-            reference_text=SAMPLE_TEXT,
+            reference_text=sample_text,
             url=url,
             model=model,
             param_space=PARAMETER_SPACE,
@@ -301,8 +387,9 @@ def run_guided_calibration(
         print("\n✗ Calibration failed - no results produced")
         return False
     
-    # Sort results by accuracy
-    results.sort(key=lambda r: r.accuracy_score, reverse=True)
+    # Sort results by composite score: 90% WER + 10% CER
+    # This prioritizes WER but uses CER as a tiebreaker
+    results.sort(key=lambda r: (0.9 * r.accuracy_score + 0.1 * r.cer_score), reverse=True)
     best = results[0]
     
     # Display results
@@ -310,7 +397,10 @@ def run_guided_calibration(
     print("                    CALIBRATION RESULTS")
     print("=" * 70)
     print()
-    print(f"Best Word Error Rate Score: {best.accuracy_score:.3f}")
+    composite = 0.9 * best.accuracy_score + 0.1 * best.cer_score
+    print(f"Best WER Score: {best.accuracy_score:.3f}")
+    print(f"Best CER Score: {best.cer_score:.3f}")
+    print(f"Combined Score: {composite:.3f} (90% WER + 10% CER)")
     print(f"Best Transcription: {best.transcript[:100]}...")
     print()
     
@@ -329,15 +419,17 @@ def run_guided_calibration(
     # Save results to config file
     results_data = {
         "best_params": best.params,
-        "best_score": best.accuracy_score,
+        "best_wer_score": best.accuracy_score,
+        "best_cer_score": best.cer_score,
         "best_transcript": best.transcript,
         "sox_command": best.sox_command,
-        "reference_text": SAMPLE_TEXT[:100] + "...",
+        "reference_text": sample_text[:100] + "...",
         "calibration_device": device,
         "all_results": [
             {
                 "params": r.params,
-                "score": r.accuracy_score,
+                "wer_score": r.accuracy_score,
+                "cer_score": r.cer_score,
                 "transcript": r.transcript
             }
             for r in results[:10]
@@ -385,8 +477,16 @@ def main():
         help="Number of optimization trials (default: 50)"
     )
     parser.add_argument(
-        "--duration", type=int, default=60,
-        help="Recording duration in seconds (default: 60)"
+        "--adaptive-ranges", action="store_true",
+        help="Automatically expand parameter ranges when boundaries are hit (runs in 3 phases)"
+    )
+    parser.add_argument(
+        "--duration", type=int,
+        help="Recording duration in seconds (auto-calculated based on text length if not specified)"
+    )
+    parser.add_argument(
+        "--text",
+        help="Path to custom text file to read (uses default sample text if not specified)"
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -398,14 +498,24 @@ def main():
     # Auto-detect device if not specified
     device = args.device or detect_audio_device()
     
+    # Normalize URL - append /transcribe if not present
+    url = args.url
+    if not url.endswith('/transcribe'):
+        url = url.rstrip('/') + '/transcribe'
+    
+    # Parse text file path if provided
+    text_file = Path(args.text) if args.text else None
+    
     try:
         success = run_guided_calibration(
             device=device,
-            url=args.url,
+            url=url,
             model=args.model,
             trials=args.trials,
             verbose=args.verbose,
-            recording_duration=args.duration
+            recording_duration=args.duration,
+            text_file=text_file,
+            adaptive_ranges=args.adaptive_ranges
         )
         sys.exit(0 if success else 1)
         

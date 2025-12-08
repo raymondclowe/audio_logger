@@ -168,9 +168,14 @@ class CalibrationResult:
 
     params: Dict[str, str]
     transcript: str
-    accuracy_score: float
-    wav_path: str
-    sox_command: List[str]
+    accuracy_score: float  # Primary metric (WER-based)
+    cer_score: float = 0.0  # Character Error Rate score
+    wav_path: str = ""
+    sox_command: List[str] = None
+
+    def __post_init__(self):
+        if self.sox_command is None:
+            self.sox_command = []
 
 
 def run_command(cmd: List[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
@@ -279,10 +284,10 @@ def playback_and_record(
 
 
 def build_noise_profile(audio_path: Path, noise_profile_path: Path) -> bool:
-    """Build a noise profile from the first 0.5 seconds of audio."""
+    """Build a noise profile from the first 3 seconds of audio (ambient noise capture)."""
     cmd = [
         "sox", str(audio_path), "-n",
-        "trim", "0", "0.5",
+        "trim", "0", "3.0",
         "noiseprof", str(noise_profile_path)
     ]
     try:
@@ -348,7 +353,7 @@ def transcribe(url: str, model: str, wav_path: Path) -> str:
             return f"ERROR: {e}"
 
 
-def calculate_word_accuracy(reference: str, transcript: str, metric: str = "wer") -> float:
+def calculate_word_accuracy(reference: str, transcript: str, metric: str = "wer", debug: bool = False) -> float:
     """
     Calculate accuracy between reference and transcript using WER or CER.
     
@@ -356,12 +361,14 @@ def calculate_word_accuracy(reference: str, transcript: str, metric: str = "wer"
         reference: The expected/reference text
         transcript: The transcribed text to evaluate
         metric: Either "wer" (Word Error Rate) or "cer" (Character Error Rate)
+        debug: If True, print detailed comparison information
     
     Returns:
         Accuracy score between 0.0 and 1.0 (higher is better)
         
-    Note: Uses jiwer library for accurate WER/CER calculation that accounts for
-    word order, insertions, deletions, and substitutions.
+    Note: 
+    - WER normalizes text (removes punctuation/case) to focus on word content
+    - CER preserves punctuation/case to evaluate transcription quality including formatting
     """
     if not reference or not transcript:
         return 0.0
@@ -370,26 +377,44 @@ def calculate_word_accuracy(reference: str, transcript: str, metric: str = "wer"
         # Use jiwer for accurate WER/CER calculation
         # WER/CER accounts for word order, insertions, deletions, substitutions
         try:
-            # Apply standard text normalization for fair comparison
-            # This handles case, punctuation, and whitespace normalization
-            transforms = jiwer.Compose([
-                jiwer.ToLowerCase(),
-                jiwer.RemovePunctuation(),
-                jiwer.RemoveMultipleSpaces(),
-                jiwer.Strip(),
-            ])
-
-            ref_normalized = transforms(reference)
-            trans_normalized = transforms(transcript)
-
             if metric == "cer":
+                # For CER, preserve punctuation and capitalization to evaluate full transcription quality
+                # Only normalize whitespace for fair comparison
+                transforms = jiwer.Compose([
+                    jiwer.RemoveMultipleSpaces(),
+                    jiwer.Strip(),
+                ])
+                ref_normalized = transforms(reference)
+                trans_normalized = transforms(transcript)
                 error_rate = jiwer.cer(ref_normalized, trans_normalized)
             else:
+                # For WER, normalize text to focus on word content (standard approach)
+                transforms = jiwer.Compose([
+                    jiwer.ToLowerCase(),
+                    jiwer.RemovePunctuation(),
+                    jiwer.RemoveMultipleSpaces(),
+                    jiwer.Strip(),
+                ])
+                ref_normalized = transforms(reference)
+                trans_normalized = transforms(transcript)
                 error_rate = jiwer.wer(ref_normalized, trans_normalized)
+            
             # Convert error rate to accuracy (clamp to 0-1 range)
             accuracy = max(0.0, 1.0 - error_rate)
+            
+            if debug:
+                print(f"\n  DEBUG: {metric.upper()} Calculation")
+                print(f"    Reference: '{ref_normalized}'")
+                print(f"    Transcript: '{trans_normalized}'")
+                print(f"    {metric.upper()}: {error_rate:.4f}")
+                print(f"    Accuracy: {accuracy:.4f}")
+                if error_rate == 0.0:
+                    print(f"    ⚠ Perfect match - no differentiation between parameters!")
+            
             return accuracy
-        except Exception:
+        except Exception as e:
+            if debug:
+                print(f"  DEBUG: jiwer error: {e}")
             # Fall back to simple metric on jiwer errors
             pass
 
@@ -462,6 +487,56 @@ def generate_parameter_combinations(param_space: Dict[str, List[str]], max_combi
     return [dict(zip(keys, combo)) for combo in combinations]
 
 
+def expand_ranges_dynamically(
+    param_ranges: Dict[str, Tuple[float, float, float]],
+    best_params: Dict[str, float],
+    expansion_factor: float = 1.5
+) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Dynamically expand parameter ranges when best values are near boundaries.
+    
+    Args:
+        param_ranges: Original parameter ranges
+        best_params: Best parameter values found
+        expansion_factor: How much to expand (1.5 = 50% wider)
+    
+    Returns:
+        Expanded parameter ranges
+    """
+    expanded_ranges = {}
+    
+    for param_name, (min_val, max_val, step) in param_ranges.items():
+        if param_name not in best_params:
+            expanded_ranges[param_name] = (min_val, max_val, step)
+            continue
+        
+        best_val = best_params[param_name]
+        range_size = max_val - min_val
+        
+        # Check if near boundaries (within 10% of range)
+        near_min = (best_val - min_val) < (range_size * 0.1)
+        near_max = (max_val - best_val) < (range_size * 0.1)
+        
+        new_min = min_val
+        new_max = max_val
+        
+        if near_min:
+            # Expand downward
+            expansion = range_size * (expansion_factor - 1.0)
+            new_min = max(0.0, min_val - expansion)  # Don't go below 0
+            print(f"  Expanding {param_name} lower bound: {min_val} → {new_min:.2f}")
+        
+        if near_max:
+            # Expand upward
+            expansion = range_size * (expansion_factor - 1.0)
+            new_max = max_val + expansion
+            print(f"  Expanding {param_name} upper bound: {max_val} → {new_max:.2f}")
+        
+        expanded_ranges[param_name] = (new_min, new_max, step)
+    
+    return expanded_ranges
+
+
 def run_bayesian_optimization(
     input_audio: Path,
     reference_text: str,
@@ -471,7 +546,9 @@ def run_bayesian_optimization(
     workdir: Path,
     n_trials: int = 50,
     metric: str = "wer",
-    verbose: bool = False
+    verbose: bool = False,
+    progress_callback: callable = None,
+    adaptive_ranges: bool = False
 ) -> List[CalibrationResult]:
     """
     Run Bayesian optimization to find optimal sox parameters.
@@ -489,6 +566,8 @@ def run_bayesian_optimization(
         n_trials: Number of optimization trials
         metric: Accuracy metric to use ("wer" or "cer")
         verbose: Show detailed progress
+        progress_callback: Optional callback(trial_num, result) for UI updates
+        adaptive_ranges: If True, automatically expand ranges when boundaries are hit
     
     Returns:
         List of CalibrationResult objects sorted by accuracy (best first)
@@ -498,85 +577,207 @@ def run_bayesian_optimization(
         print("Falling back to random sampling strategy.")
         return []
     
-    results: List[CalibrationResult] = []
-    trial_counter = [0]  # Use list for mutable closure
+    # Use adaptive ranges if requested
+    param_ranges = PARAMETER_RANGES.copy()
+    all_results: List[CalibrationResult] = []
     
-    def objective(trial: optuna.Trial) -> float:
-        """Objective function for optuna optimization."""
-        trial_counter[0] += 1
+    # Adaptive optimization: run multiple phases with expanding ranges
+    max_phases = 3 if adaptive_ranges else 1
+    trials_per_phase = n_trials // max_phases if adaptive_ranges else n_trials
+    
+    for phase in range(max_phases):
+        if adaptive_ranges and phase > 0:
+            print(f"\n🔄 Phase {phase + 1}/{max_phases}: Expanding ranges based on previous results")
+            # Expand ranges based on best results from previous phase
+            best_result = max(all_results, key=lambda r: 0.9 * r.accuracy_score + 0.1 * r.cer_score)
+            best_param_values = {}
+            for k, v in best_result.params.items():
+                try:
+                    best_param_values[k] = float(v)
+                except:
+                    best_param_values[k] = int(v)
+            
+            param_ranges = expand_ranges_dynamically(param_ranges, best_param_values)
         
-        # Sample parameters from continuous ranges
-        params = {}
-        for param_name, (min_val, max_val, step) in PARAMETER_RANGES.items():
-            if param_name in ["noisered", "compand_attack", "compand_decay"]:
-                # Float parameters - sample with 2 decimal precision
-                value = trial.suggest_float(param_name, min_val, max_val, step=step)
-                params[param_name] = f"{value:.2f}"
-            else:
-                # Integer parameters
-                value = trial.suggest_int(param_name, int(min_val), int(max_val), step=int(step))
-                params[param_name] = str(value)
-        
-        # Apply sox processing
-        output_wav = workdir / f"trial_{trial_counter[0]:04d}.wav"
-        success, sox_cmd = apply_sox_processing(input_audio, output_wav, noise_profile, params)
-        
-        if not success:
+        results: List[CalibrationResult] = []
+        trial_counter = [len(all_results)]  # Continue numbering from previous phase
+    
+        def objective(trial: optuna.Trial) -> float:
+            """Objective function for optuna optimization."""
+            trial_counter[0] += 1
+            
+            # Sample parameters from continuous ranges (use current param_ranges)
+            params = {}
+            for param_name, (min_val, max_val, step) in param_ranges.items():
+                if param_name in ["noisered", "compand_attack", "compand_decay"]:
+                    # Float parameters - sample with 2 decimal precision
+                    value = trial.suggest_float(param_name, min_val, max_val, step=step)
+                    params[param_name] = f"{value:.2f}"
+                else:
+                    # Integer parameters
+                    value = trial.suggest_int(param_name, int(min_val), int(max_val), step=int(step))
+                    params[param_name] = str(value)
+            
+            # Apply sox processing
+            output_wav = workdir / f"trial_{trial_counter[0]:04d}.wav"
+            success, sox_cmd = apply_sox_processing(input_audio, output_wav, noise_profile, params)
+            
+            if not success:
+                if verbose:
+                    print(f"  [{trial_counter[0]}/{trials_per_phase}] FAILED: sox processing error")
+                return 0.0  # Return worst score for failed processing
+            
+            # Transcribe
+            transcript = transcribe(url, model, output_wav)
+            
+            # Calculate score using WER/CER (with debug on first few trials)
+            debug_calc = verbose and trial_counter[0] <= 3
+            score = calculate_word_accuracy(reference_text, transcript, metric=metric, debug=debug_calc)
+            
+            # Also calculate CER for additional insight
+            cer_score = calculate_word_accuracy(reference_text, transcript, metric="cer", debug=False)
+            
+            # Create composite score: WER is primary (90%), CER is tiebreaker (10%)
+            # This ensures WER dominates but CER breaks ties
+            composite_score = 0.9 * score + 0.1 * cer_score
+            
+            # Store result
+            result = CalibrationResult(
+                params=params,
+                transcript=transcript,
+                accuracy_score=score,
+                cer_score=cer_score,
+                wav_path=str(output_wav),
+                sox_command=sox_cmd
+            )
+            results.append(result)
+            
+            # Call progress callback if provided
+            if progress_callback:
+                progress_callback(trial_counter[0], result)
+            
             if verbose:
-                print(f"  [{trial_counter[0]}/{n_trials}] FAILED: sox processing error")
-            return 0.0  # Return worst score for failed processing
+                params_str = ', '.join([f"{k}={v}" for k, v in list(params.items())[:3]])
+                print(f"  [{trial_counter[0]}/{trials_per_phase}] WER: {score:.3f}, CER: {cer_score:.3f}, Combined: {composite_score:.3f} | {params_str}... | Transcript: {transcript[:40]}...")
+            elif trial_counter[0] % 10 == 0 or trial_counter[0] == trials_per_phase:
+                print(f"  Progress: {trial_counter[0]}/{trials_per_phase} ({100*trial_counter[0]//trials_per_phase}%)")
+            
+            return composite_score  # Return composite score for optimization
         
-        # Transcribe
-        transcript = transcribe(url, model, output_wav)
+        print(f"\nRunning Bayesian optimization with {trials_per_phase} trials...")
+        if adaptive_ranges and phase > 0:
+            print(f"Phase {phase + 1}/{max_phases} with expanded ranges")
+        print(f"Optimization strategy: 90% WER + 10% CER (WER primary, CER tiebreaker)")
+        print(f"Reference text: '{reference_text[:60]}{'...' if len(reference_text) > 60 else ''}'")
+        print(f"Reference length: {len(reference_text.split())} words\n")
         
-        # Calculate score using WER/CER
-        score = calculate_word_accuracy(reference_text, transcript, metric=metric)
-        
-        # Store result
-        result = CalibrationResult(
-            params=params,
-            transcript=transcript,
-            accuracy_score=score,
-            wav_path=str(output_wav),
-            sox_command=sox_cmd
+        # Create study with TPE sampler (good for hyperparameter optimization)
+        sampler = optuna.samplers.TPESampler(seed=RANDOM_SEED + phase)
+        study = optuna.create_study(
+            direction="maximize",  # We want to maximize accuracy
+            sampler=sampler,
+            study_name=f"room_calibration_phase_{phase}"
         )
-        results.append(result)
         
-        if verbose:
-            print(f"  [{trial_counter[0]}/{n_trials}] Score: {score:.3f} | Transcript: {transcript[:50]}...")
-        elif trial_counter[0] % 10 == 0 or trial_counter[0] == n_trials:
-            print(f"  Progress: {trial_counter[0]}/{n_trials} ({100*trial_counter[0]//n_trials}%)")
+        # Add baseline as first trial (only in first phase)
+        if phase == 0:
+            baseline_values = {}
+            for param_name, value in BASELINE_PARAMS.items():
+                if param_name in ["noisered", "compand_attack", "compand_decay"]:
+                    baseline_values[param_name] = float(value)
+                else:
+                    baseline_values[param_name] = int(value)
+            
+            study.enqueue_trial(baseline_values)
         
-        return score  # optuna maximizes by default when direction="maximize"
+        # Run optimization for this phase
+        study.optimize(objective, n_trials=trials_per_phase, show_progress_bar=False)
+        
+        # Add results from this phase to all_results
+        all_results.extend(results)
     
-    print(f"\nRunning Bayesian optimization with {n_trials} trials...")
-    print(f"Using {metric.upper()} metric for accuracy scoring")
+    # Final analysis on all results
+    print(f"\n{'='*70}")
+    print(f"FINAL RESULTS (across all phases)")
+    print(f"{'='*70}")
     
-    # Create study with TPE sampler (good for hyperparameter optimization)
-    sampler = optuna.samplers.TPESampler(seed=RANDOM_SEED)
-    study = optuna.create_study(
-        direction="maximize",  # We want to maximize accuracy
-        sampler=sampler,
-        study_name="room_calibration"
-    )
+    best_result = max(all_results, key=lambda r: 0.9 * r.accuracy_score + 0.1 * r.cer_score)
+    print(f"Best combined score: {0.9 * best_result.accuracy_score + 0.1 * best_result.cer_score:.3f}")
+    print(f"Best WER: {best_result.accuracy_score:.3f}")
+    print(f"Best CER: {best_result.cer_score:.3f}")
     
-    # Add baseline as first trial
-    baseline_values = {}
-    for param_name, value in BASELINE_PARAMS.items():
-        if param_name in ["noisered", "compand_attack", "compand_decay"]:
-            baseline_values[param_name] = float(value)
+    # Check for boundary hitting (use current param_ranges which may be expanded)
+    best_params_dict = {}
+    for k, v in best_result.params.items():
+        try:
+            best_params_dict[k] = float(v)
+        except:
+            best_params_dict[k] = int(v)
+    
+    boundary_warnings = []
+    
+    for param_name, (min_val, max_val, step) in param_ranges.items():
+        if param_name in best_params_dict:
+            best_val = best_params_dict[param_name]
+            # Consider it at boundary if within one step of the edge
+            at_min = abs(best_val - min_val) < step * 1.5
+            at_max = abs(best_val - max_val) < step * 1.5
+            
+            if at_min:
+                boundary_warnings.append(f"{param_name}={best_val:.2f} at LOWER boundary (range: {min_val}-{max_val})")
+            elif at_max:
+                boundary_warnings.append(f"{param_name}={best_val:.2f} at UPPER boundary (range: {min_val}-{max_val})")
+    
+    if boundary_warnings:
+        print(f"\n⚠ BOUNDARY WARNING: Optimal values at range edges!")
+        print(f"  The following parameters hit their limits:")
+        for warning in boundary_warnings:
+            print(f"    • {warning}")
+        if not adaptive_ranges:
+            print(f"\n  This suggests the optimal value may be outside the search range.")
+            print(f"  Recommendations:")
+            print(f"    1. Run again with --adaptive-ranges to automatically expand")
+            print(f"    2. Manually expand ranges in PARAMETER_RANGES")
+            print(f"    3. Run calibration again with more trials")
         else:
-            baseline_values[param_name] = int(value)
+            print(f"\n  Note: Adaptive range expansion was enabled but boundaries were still hit.")
+            print(f"  Consider running again with more phases or manual range adjustment.")
     
-    study.enqueue_trial(baseline_values)
+    # Analyze score distribution
+    wer_scores = [r.accuracy_score for r in all_results]
+    cer_scores = [r.cer_score for r in all_results]
+    unique_wer = set(wer_scores)
+    unique_cer = set(cer_scores)
     
-    # Run optimization
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    print(f"\nScore analysis:")
+    print(f"  Total trials: {len(all_results)}")
+    print(f"  WER Accuracy:")
+    print(f"    Unique scores: {len(unique_wer)}")
+    print(f"    Min: {min(wer_scores):.3f}, Max: {max(wer_scores):.3f}, Avg: {sum(wer_scores)/len(wer_scores):.3f}")
+    print(f"  CER Accuracy:")
+    print(f"    Unique scores: {len(unique_cer)}")
+    print(f"    Min: {min(cer_scores):.3f}, Max: {max(cer_scores):.3f}, Avg: {sum(cer_scores)/len(cer_scores):.3f}")
     
-    print(f"\nBest trial: {study.best_trial.number}")
-    print(f"Best score: {study.best_value:.3f}")
+    total_trials = len(all_results)
+    if len(unique_wer) == 1 and len(unique_cer) == 1:
+        print(f"\n⚠ WARNING: All trials produced identical WER and CER scores!")
+        print(f"  This suggests:")
+        print(f"  1. The text is too simple/short to differentiate parameters")
+        print(f"  2. The audio quality is too good (no noise to filter)")
+        print(f"  3. All parameter combinations produce perfect transcription")
+        print(f"  Recommendation: Use longer, more complex text with background noise")
+    elif len(unique_wer) == 1:
+        print(f"\n⚠ WARNING: All trials produced identical WER scores!")
+        print(f"  However, CER shows {len(unique_cer)} unique scores.")
+        print(f"  CER may capture punctuation/character differences that WER misses.")
+    elif len(unique_wer) < total_trials * 0.1:
+        print(f"\n⚠ WARNING: Very few unique WER scores ({len(unique_wer)} out of {total_trials})")
+        print(f"  Parameters may not have significant impact on transcription quality")
+        if len(unique_cer) > len(unique_wer) * 2:
+            print(f"  Note: CER shows more variation ({len(unique_cer)} unique scores)")
     
-    return results
+    return all_results
+
 
 
 def format_sox_settings(params: Dict[str, str]) -> str:

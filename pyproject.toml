@@ -9,4 +9,5 @@ dependencies = [
     "psutil>=5.9.0",
     "jiwer>=3.0.4",
     "optuna>=4.0.0",
+    "rich>=13.7.0",
 ]
