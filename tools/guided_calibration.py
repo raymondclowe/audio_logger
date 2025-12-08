@@ -54,6 +54,15 @@ from room_calibration import (
 # Sample text file path (shared with room_calibration-example.txt)
 SAMPLE_TEXT_FILE = Path(__file__).parent / "room_calibration-example.txt"
 
+# Load sample text at module level for testing
+SAMPLE_TEXT = """AFTER having been twice driven back by heavy southwestern gales, Her Majesty's ship Beagle, a ten-gun brig, under the command of Captain Fitz Roy, R. N., sailed from Devonport on the 27th of December, 1831. The object of the expedition was to complete the survey of Patagonia and Tierra del Fuego, commenced under Captain King in 1826 to 1830,--to survey the shores of Chile, Peru, and of some islands in the Pacific--and to carry a chain of chronometrical measurements round the World. On the 6th of January we reached Teneriffe, but were prevented landing, by fears of our bringing the cholera: the next morning we saw the sun rise behind the rugged outline of the Grand Canary island, and suddenly illuminate the Peak of Teneriffe, whilst the lower parts were veiled in fleecy clouds. This was the first of many delightful days never to be forgotten. On the 16th of January, 1832, we anchored at Porto Praya, in St. Jago, the chief island of the Cape de Verd archipelago."""
+
+if SAMPLE_TEXT_FILE.exists():
+    try:
+        SAMPLE_TEXT = SAMPLE_TEXT_FILE.read_text().strip()
+    except Exception:
+        pass  # Use fallback text above
+
 
 def load_sample_text(text_file: Optional[Path] = None) -> str:
     """Load sample text from file for consistency with other tools."""
