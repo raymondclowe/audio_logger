@@ -54,6 +54,15 @@ from room_calibration import (
 # Sample text file path (shared with room_calibration-example.txt)
 SAMPLE_TEXT_FILE = Path(__file__).parent / "room_calibration-example.txt"
 
+# Load sample text at module level for testing
+SAMPLE_TEXT = """AFTER having been twice driven back by heavy southwestern gales, Her Majesty's ship Beagle, a ten-gun brig, under the command of Captain Fitz Roy, R. N., sailed from Devonport on the 27th of December, 1831. The object of the expedition was to complete the survey of Patagonia and Tierra del Fuego, commenced under Captain King in 1826 to 1830,--to survey the shores of Chile, Peru, and of some islands in the Pacific--and to carry a chain of chronometrical measurements round the World. On the 6th of January we reached Teneriffe, but were prevented landing, by fears of our bringing the cholera: the next morning we saw the sun rise behind the rugged outline of the Grand Canary island, and suddenly illuminate the Peak of Teneriffe, whilst the lower parts were veiled in fleecy clouds. This was the first of many delightful days never to be forgotten. On the 16th of January, 1832, we anchored at Porto Praya, in St. Jago, the chief island of the Cape de Verd archipelago."""
+
+if SAMPLE_TEXT_FILE.exists():
+    try:
+        SAMPLE_TEXT = SAMPLE_TEXT_FILE.read_text().strip()
+    except Exception:
+        pass  # Use fallback text above
+
 
 def load_sample_text(text_file: Optional[Path] = None) -> str:
     """Load sample text from file for consistency with other tools."""
@@ -176,17 +185,11 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
     User can press Enter to stop recording early.
     Starts with 3-second countdown for ambient noise capture.
     """
-    print(f"\n🎤 Starting in:")
+    # Constants for recording timing
+    RECORDING_START_DELAY = 0.2  # Seconds to wait for recording process to start
+    COUNTDOWN_DURATION = 3  # Seconds of silence to capture for noise profiling
     
-    # 3-second countdown for ambient noise capture
-    for i in range(3, 0, -1):
-        print(f"   {i}...")
-        time.sleep(1)
-    
-    print(f"   🔴 RECORDING (up to {duration} seconds)")
-    print("   (Read the sample text aloud now)")
-    print("   Press ENTER when you're done reading to stop early")
-    print()
+    print(f"\n🎤 Starting recording...")
     
     cmd = [
         "arecord",
@@ -202,8 +205,23 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         import threading
         import select
         
-        # Start recording process
+        # Start recording process BEFORE countdown to capture ambient noise
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        # Brief delay to ensure recording has started
+        time.sleep(RECORDING_START_DELAY)
+        
+        print("   Stay SILENT during countdown (capturing ambient noise)...")
+        
+        # Countdown while recording captures silence
+        for i in range(COUNTDOWN_DURATION, 0, -1):
+            print(f"   {i}...")
+            time.sleep(1)
+        
+        print(f"   🔴 NOW READING (up to {duration} seconds)")
+        print("   (Read the sample text aloud now)")
+        print("   Press ENTER when you're done reading to stop early")
+        print()
         
         stop_recording = threading.Event()
         
@@ -223,8 +241,8 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         enter_thread = threading.Thread(target=wait_for_enter, daemon=True)
         enter_thread.start()
         
-        # Show countdown while recording
-        for elapsed in range(duration):
+        # Show countdown while recording (account for seconds already elapsed during countdown)
+        for elapsed in range(COUNTDOWN_DURATION, duration):
             remaining = duration - elapsed
             print(f"   Recording... {elapsed}s elapsed, {remaining}s remaining (or press ENTER to finish)", end="\r")
             time.sleep(1)
