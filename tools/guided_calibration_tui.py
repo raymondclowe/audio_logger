@@ -111,6 +111,10 @@ def calculate_recording_duration(text: str, words_per_minute: int = 150) -> int:
 
 def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) -> bool:
     """Record audio with 3-second countdown for ambient noise capture."""
+    # Constants for recording timing
+    RECORDING_START_DELAY = 0.2  # Seconds to wait for recording process to start
+    COUNTDOWN_DURATION = 3  # Seconds of silence to capture for noise profiling
+    
     console.print(f"\n[yellow]🎤 Starting recording...[/yellow]")
     
     cmd = [
@@ -128,12 +132,12 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
         # Brief delay to ensure recording has started
-        time.sleep(0.2)
+        time.sleep(RECORDING_START_DELAY)
         
         console.print(f"[dim]   Stay SILENT during countdown (capturing ambient noise)...[/dim]")
         
-        # 3-second countdown - recording is happening now to capture silence
-        for i in range(3, 0, -1):
+        # Countdown while recording captures silence
+        for i in range(COUNTDOWN_DURATION, 0, -1):
             console.print(f"[bold cyan]   {i}...[/bold cyan]")
             time.sleep(1)
         
@@ -164,11 +168,11 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         ) as progress:
             task = progress.add_task("Recording...", total=duration)
             
-            # Account for 3 seconds already elapsed during countdown
-            progress.update(task, advance=3)
+            # Account for seconds already elapsed during countdown
+            progress.update(task, advance=COUNTDOWN_DURATION)
             
             # Continue recording for remaining duration
-            for elapsed in range(3, duration):
+            for elapsed in range(COUNTDOWN_DURATION, duration):
                 if stop_recording.is_set() or process.poll() is not None:
                     break
                 time.sleep(1)

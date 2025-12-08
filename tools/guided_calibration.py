@@ -185,6 +185,10 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
     User can press Enter to stop recording early.
     Starts with 3-second countdown for ambient noise capture.
     """
+    # Constants for recording timing
+    RECORDING_START_DELAY = 0.2  # Seconds to wait for recording process to start
+    COUNTDOWN_DURATION = 3  # Seconds of silence to capture for noise profiling
+    
     print(f"\n🎤 Starting recording...")
     
     cmd = [
@@ -205,12 +209,12 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
         # Brief delay to ensure recording has started
-        time.sleep(0.2)
+        time.sleep(RECORDING_START_DELAY)
         
         print("   Stay SILENT during countdown (capturing ambient noise)...")
         
-        # 3-second countdown for ambient noise capture - recording is already happening
-        for i in range(3, 0, -1):
+        # Countdown while recording captures silence
+        for i in range(COUNTDOWN_DURATION, 0, -1):
             print(f"   {i}...")
             time.sleep(1)
         
@@ -237,8 +241,8 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         enter_thread = threading.Thread(target=wait_for_enter, daemon=True)
         enter_thread.start()
         
-        # Show countdown while recording (account for 3 seconds already elapsed during countdown)
-        for elapsed in range(3, duration):
+        # Show countdown while recording (account for seconds already elapsed during countdown)
+        for elapsed in range(COUNTDOWN_DURATION, duration):
             remaining = duration - elapsed
             print(f"   Recording... {elapsed}s elapsed, {remaining}s remaining (or press ENTER to finish)", end="\r")
             time.sleep(1)
