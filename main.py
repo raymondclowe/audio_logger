@@ -817,19 +817,40 @@ def transcribe_audio(audio_path: Path) -> str:
                 else:
                     context = LAST_TRANSCRIPT
                 params['prompt'] = f"Continuing conversation: ...{context}"
-            response = requests.post(config_manager.get_transcription_url(), files=files, params=params, timeout=30)
+            
+            url = config_manager.get_transcription_url()
+            if DEBUG:
+                print(f"[transcribe_audio] POST to {url} with model={params['model']}")
+            
+            response = requests.post(url, files=files, params=params, timeout=30)
+            
+            if DEBUG:
+                print(f"[transcribe_audio] Response status: {response.status_code}")
+                print(f"[transcribe_audio] Response headers: {dict(response.headers)}")
+                print(f"[transcribe_audio] Response text: {response.text[:500]}")
+            
             response.raise_for_status()
             result = response.json()
             transcript = result.get('text', '').strip()
+            
             if DEBUG:
                 print(f"[transcribe_audio] Transcript: '{transcript}'")
+                print(f"[transcribe_audio] Full result: {result}")
+            
             # Update context for next transcription
             if transcript:
                 LAST_TRANSCRIPT = transcript
             return transcript
+    except requests.exceptions.RequestException as e:
+        print(f"[transcribe_audio] Network/HTTP error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"[transcribe_audio] Response status: {e.response.status_code}")
+            print(f"[transcribe_audio] Response body: {e.response.text[:500]}")
+        return ""
     except Exception as e:
-        if DEBUG:
-            print(f"[transcribe_audio] Transcription failed: {e}")
+        print(f"[transcribe_audio] Transcription failed: {type(e).__name__}: {e}")
+        import traceback
+        print(f"[transcribe_audio] Traceback: {traceback.format_exc()}")
         return ""
 
 
@@ -979,6 +1000,11 @@ def process_audio_worker(task_queue):
             if transcript:
                 log_transcript(transcript, stats, raw_audio.name)
             else:
+                # Always print to console when transcription fails (not just DEBUG mode)
+                print(f"[{timestamp}] WARNING: Transcription returned empty result for {raw_audio.name}")
+                print(f"[{timestamp}]   Audio stats: mean={stats['mean']:.1f}, peak={stats['peak']:.1f}")
+                print(f"[{timestamp}]   Clean audio file: {clean_audio_path}")
+                print(f"[{timestamp}]   File exists: {clean_audio_path.exists()}, size: {clean_audio_path.stat().st_size if clean_audio_path.exists() else 'N/A'}")
                 log_event("NO_TRANSCRIPT", "Transcription returned empty result", raw_audio.name, stats)
                 if DEBUG:
                     print(f"[{timestamp}] No transcript generated.")
