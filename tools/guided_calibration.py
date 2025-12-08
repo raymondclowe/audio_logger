@@ -176,17 +176,7 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
     User can press Enter to stop recording early.
     Starts with 3-second countdown for ambient noise capture.
     """
-    print(f"\n🎤 Starting in:")
-    
-    # 3-second countdown for ambient noise capture
-    for i in range(3, 0, -1):
-        print(f"   {i}...")
-        time.sleep(1)
-    
-    print(f"   🔴 RECORDING (up to {duration} seconds)")
-    print("   (Read the sample text aloud now)")
-    print("   Press ENTER when you're done reading to stop early")
-    print()
+    print(f"\n🎤 Starting recording...")
     
     cmd = [
         "arecord",
@@ -202,8 +192,23 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         import threading
         import select
         
-        # Start recording process
+        # Start recording process BEFORE countdown to capture ambient noise
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        # Brief delay to ensure recording has started
+        time.sleep(0.2)
+        
+        print("   Stay SILENT during countdown (capturing ambient noise)...")
+        
+        # 3-second countdown for ambient noise capture - recording is already happening
+        for i in range(3, 0, -1):
+            print(f"   {i}...")
+            time.sleep(1)
+        
+        print(f"   🔴 NOW READING (up to {duration} seconds)")
+        print("   (Read the sample text aloud now)")
+        print("   Press ENTER when you're done reading to stop early")
+        print()
         
         stop_recording = threading.Event()
         
@@ -223,8 +228,8 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         enter_thread = threading.Thread(target=wait_for_enter, daemon=True)
         enter_thread.start()
         
-        # Show countdown while recording
-        for elapsed in range(duration):
+        # Show countdown while recording (account for 3 seconds already elapsed during countdown)
+        for elapsed in range(3, duration):
             remaining = duration - elapsed
             print(f"   Recording... {elapsed}s elapsed, {remaining}s remaining (or press ENTER to finish)", end="\r")
             time.sleep(1)

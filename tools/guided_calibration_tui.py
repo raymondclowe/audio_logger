@@ -111,15 +111,7 @@ def calculate_recording_duration(text: str, words_per_minute: int = 150) -> int:
 
 def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) -> bool:
     """Record audio with 3-second countdown for ambient noise capture."""
-    console.print(f"\n[yellow]🎤 Starting in:[/yellow]")
-    
-    # 3-second countdown
-    for i in range(3, 0, -1):
-        console.print(f"[bold cyan]   {i}...[/bold cyan]")
-        time.sleep(1)
-    
-    console.print(f"[bold green]   🔴 RECORDING[/bold green] (up to {duration} seconds)")
-    console.print("[dim]   Press ENTER when done reading to stop early[/dim]\n")
+    console.print(f"\n[yellow]🎤 Starting recording...[/yellow]")
     
     cmd = [
         "arecord",
@@ -132,7 +124,21 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
     ]
     
     try:
+        # Start recording BEFORE the countdown to capture ambient noise
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        # Brief delay to ensure recording has started
+        time.sleep(0.2)
+        
+        console.print(f"[dim]   Stay SILENT during countdown (capturing ambient noise)...[/dim]")
+        
+        # 3-second countdown - recording is happening now to capture silence
+        for i in range(3, 0, -1):
+            console.print(f"[bold cyan]   {i}...[/bold cyan]")
+            time.sleep(1)
+        
+        console.print(f"[bold green]   🔴 NOW READING[/bold green] (up to {duration} seconds)")
+        console.print("[dim]   Press ENTER when done reading to stop early[/dim]\n")
         
         stop_recording = threading.Event()
         
@@ -158,7 +164,11 @@ def record_audio_16k_mono(device: str, output_path: Path, duration: int = 60) ->
         ) as progress:
             task = progress.add_task("Recording...", total=duration)
             
-            for elapsed in range(duration):
+            # Account for 3 seconds already elapsed during countdown
+            progress.update(task, advance=3)
+            
+            # Continue recording for remaining duration
+            for elapsed in range(3, duration):
                 if stop_recording.is_set() or process.poll() is not None:
                     break
                 time.sleep(1)
