@@ -38,7 +38,7 @@ DEBUG = "--debug" in sys.argv or config_manager.is_debug_enabled() or Path(".deb
 
 # Configuration - loaded from config file with fallbacks
 AUDIO_DEVICE = config_manager.get_audio_device()  # Will be auto-detected if None
-RECORD_DURATION = 60  # seconds
+RECORD_DURATION = 20 if DEBUG else 60  # seconds - shorter in debug mode for faster testing
 OVERLAP_DURATION = 2  # seconds - overlap between chunks to avoid word breaks
 LOG_DIR = Path(__file__).parent / "logs"
 TEMP_DIR = Path(__file__).parent / "temp"

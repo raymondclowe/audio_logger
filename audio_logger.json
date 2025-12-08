@@ -4,5 +4,5 @@
     "model": "small"
   },
   "audio_device": null,
-  "debug": false
+  "debug": true
 }
